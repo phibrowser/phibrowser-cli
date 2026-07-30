@@ -1,4 +1,4 @@
-# phibrowser-cli
+# phi-cli
 
 Command-line browser automation for **Phi Browser**, modeled on Microsoft's
 [`@playwright/cli`](https://github.com/microsoft/playwright-cli) but backed by
@@ -7,11 +7,11 @@ user's *running* browser, reusing their login state, watchable from the Space
 switcher, with take-control / hand-back built in.
 
 ```bash
-phibrowser open https://example.com     # bind the Space, open the page, print the element map
-phibrowser click @2                     # act on a ref from the map
-phibrowser fill @1 "search term" --submit
-phibrowser screenshot shot.png
-phibrowser close
+phi open https://example.com     # bind the Space, open the page, print the element map
+phi click @2                     # act on a ref from the map
+phi fill @1 "search term" --submit
+phi screenshot shot.png
+phi close
 ```
 
 ## Architecture
@@ -60,7 +60,7 @@ to. Resolution order:
 
 State that persists between invocations lives in the browser or on disk, not
 in the CLI: the Space keeps its tabs (ephemeral TTL ~30 min between rounds —
-`phibrowser ping` before longer gaps), refs (`@N`) are CDP backendNodeIds
+`phi ping` before longer gaps), refs (`@N`) are CDP backendNodeIds
 stable for the element's lifetime, and `observe` diff baselines persist on
 disk, so `snapshot --diff` and the after-action change summaries work across
 invocations.
@@ -69,17 +69,25 @@ invocations.
 
 ```bash
 npm install -g @phibrowser/cli          # npm
-brew install phibrowser/tap/phibrowser  # Homebrew (same tarball, adds node)
+brew install phibrowser/tap/phi-cli     # Homebrew (same tarball, adds node)
 ```
 
-Both install the `phibrowser` command. There is nothing else to set up: the
+Both install the **`phi`** command, plus `phibrowser` as an alias for it —
+the same entry point under either name. There is nothing else to set up: the
 CLI finds the automation engine inside the installed Phi Browser app (see
 [resolution order](#contexts--where-a-command-runs) above).
+
+The tap serves the browser too, so a machine can get both from Homebrew:
+
+```bash
+brew install --cask phibrowser/tap/phi   # the browser
+brew install phibrowser/tap/phi-cli      # the CLI that drives it
+```
 
 From a checkout, for development:
 
 ```bash
-cd phibrowser-cli && npm link      # or: alias phibrowser="node $PWD/bin/phibrowser.mjs"
+cd phibrowser-cli && npm link      # or: alias phi="node $PWD/bin/phi-cli.mjs"
 ```
 
 Releasing (publish + Homebrew tap sync) is documented in
@@ -108,10 +116,10 @@ Releasing (publish + Homebrew tap sync) is documented in
 A session names an agent Space task. Default is `cli`; pick one per goal:
 
 ```bash
-phibrowser -s checkout open https://shop.example   # -s / --session / $PHIBROWSER_SESSION
-phibrowser -s checkout click @14
-phibrowser sessions                                # list Spaces; * marks yours
-phibrowser -s checkout close                       # complete the task, close the Space
+phi -s checkout open https://shop.example   # -s / --session / $PHIBROWSER_SESSION
+phi -s checkout click @14
+phi sessions                                # list Spaces; * marks yours
+phi -s checkout close                       # complete the task, close the Space
 ```
 
 `--profile <name>` picks the browser profile and `--persistent` creates a
@@ -146,7 +154,7 @@ survive layout shifts and auto-scroll into view.
 
 ## Commands
 
-Run `phibrowser help` for the full list, `phibrowser help <command>` for
+Run `phi help` for the full list, `phi help <command>` for
 per-command flags.
 
 | Group | Commands |
@@ -186,9 +194,9 @@ each ordinary command driving a user Space's real window, exactly like the
 default commands drive the agent Space — add the global `-U <name>` flag:
 
 ```bash
-phibrowser -U "Work" goto https://example.com   # navigate the Work Space's window
-phibrowser -U "Work" click @5                     # separate invocation, re-binds to its tab
-phibrowser -U "Work" snapshot
+phi -U "Work" goto https://example.com   # navigate the Work Space's window
+phi -U "Work" click @5                     # separate invocation, re-binds to its tab
+phi -U "Work" snapshot
 ```
 
 It applies to every page-driving command (open/goto/click/fill/snapshot/
@@ -264,11 +272,11 @@ assertions; without it, that group is skipped.
 ## Co-working rules (inherited from the skill)
 
 - While the **user holds control**, mutating commands fail with "user is
-  controlling" (exit code 3). That is a hard stop: `phibrowser watch` blocks
+  controlling" (exit code 3). That is a hard stop: `phi watch` blocks
   until hand-back; never retry or `takeover` without the user's say-so.
 - Logins, captchas, 2FA, and consequential choices are the user's:
-  `phibrowser handoff "Sign in, then hand back"` (add `--wait` to block).
-- Cloudflare challenges are never solved by the agent — `phibrowser challenge`
+  `phi handoff "Sign in, then hand back"` (add `--wait` to block).
+- Cloudflare challenges are never solved by the agent — `phi challenge`
   detects one; hand off.
 - `messages` surfaces commands the user typed into Phi's Agent Transcript
   console; honor them before continuing (`open` warns when any are pending).
@@ -325,8 +333,8 @@ debugging ▸ "Allow agents to control Phi (CDP)", then run this again.
 Same thing without a terminal, for scripts and provisioning:
 
 ```bash
-phibrowser install --browser              # download, verify, install
-phibrowser install --browser --dry-run    # report the release, download nothing
+phi install --browser              # download, verify, install
+phi install --browser --dry-run    # report the release, download nothing
 ```
 
 It comes from Phi's own update feed — the Sparkle appcast the app itself

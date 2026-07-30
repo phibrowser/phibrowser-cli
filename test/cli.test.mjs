@@ -22,7 +22,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-const BIN = join(dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'phibrowser.mjs')
+const BIN = join(dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'phi-cli.mjs')
 const S = 'clitest'          // agent-Space session for the page tests
 const TMP = mkdtempSync(join(tmpdir(), 'phib-clitest-'))
 

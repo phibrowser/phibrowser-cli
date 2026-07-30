@@ -10,19 +10,19 @@ the formula follows it.
   npm org (`npm org ls phibrowser`) and logged in (`npm whoami`). The first
   publish creates the package; `publishConfig.access: public` keeps it from
   defaulting to restricted.
-- **Homebrew tap** — Homebrew reads formulae from a repo named
-  `homebrew-<tap>`, so `brew install phibrowser/tap/phibrowser` resolves to
-  `github.com/phibrowser/homebrew-tap`. Create it once:
+- **Homebrew tap** — `github.com/phibrowser/homebrew-tap` already exists and
+  is public. It currently serves `Casks/phi.rb` (the browser); the CLI adds
+  `Formula/phi-cli.rb` alongside it, so one tap serves both:
 
   ```bash
-  brew tap-new phibrowser/tap                     # scaffolds it locally
-  cd "$(brew --repository phibrowser/tap)"
-  git remote add origin git@github.com:phibrowser/homebrew-tap.git
-  git push -u origin HEAD
+  brew install --cask phibrowser/tap/phi   # the browser
+  brew install phibrowser/tap/phi-cli      # the CLI
   ```
 
-  `Formula/phibrowser.rb` in *this* repo is the canonical copy; the tap gets a
-  copy of it each release.
+  `Formula/phi-cli.rb` in *this* repo is the canonical copy; the tap gets a
+  copy of it each release. Every commit in that tap has landed through a PR
+  (there is no branch protection enforcing it — it is convention), so send
+  one rather than pushing to `main`.
 
 ## Cutting a release
 
@@ -47,17 +47,21 @@ Then ship the formula:
 git commit -am "chore: release v$(node -p 'require("./package.json").version')"
 git push --follow-tags
 
-cp Formula/phibrowser.rb "$(brew --repository phibrowser/tap)/Formula/"
-cd "$(brew --repository phibrowser/tap)" && git commit -am "phibrowser <version>" && git push
+# tap: land the formula through a PR, matching how every other commit got there
+gh repo clone phibrowser/homebrew-tap /tmp/phi-tap && cd /tmp/phi-tap
+git checkout -b phi-cli-<version>
+cp ~/Phi/phibrowser-cli/Formula/phi-cli.rb Formula/
+git add -A && git commit -m "phi-cli <version>" && git push -u origin HEAD
+gh pr create --fill
 ```
 
 ## Verifying
 
 ```bash
 npm run formula -- --check                     # formula matches the registry
-brew style ./Formula/phibrowser.rb
-brew install phibrowser/tap/phibrowser && phibrowser --version
-brew test phibrowser/tap/phibrowser
+brew style ./Formula/phi-cli.rb
+brew install phibrowser/tap/phi-cli && phi --version
+brew test phibrowser/tap/phi-cli
 ```
 
 To exercise `brew install` *before* publishing, copy the formula into the tap

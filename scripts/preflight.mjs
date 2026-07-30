@@ -18,12 +18,19 @@ const fail = (msg) => problems.push(msg)
 
 // 1. The bin must be directly executable: npm sets the mode on install, but a
 // non-shebang'd or unreadable entry point fails only at the user's shell.
-const bin = join(pkgRoot, pkg.bin.phibrowser)
-try {
-  accessSync(bin, constants.X_OK)
-  const head = readFileSync(bin, 'utf8').slice(0, 32)
-  if (!head.startsWith('#!/usr/bin/env node')) fail(`${pkg.bin.phibrowser}: missing node shebang`)
-} catch { fail(`${pkg.bin.phibrowser}: not executable (chmod +x)`) }
+// Both `phi` and its `phibrowser` alias must resolve to a runnable entry.
+const binPaths = [...new Set(Object.values(pkg.bin))]
+if (!pkg.bin.phi || !pkg.bin.phibrowser) fail('package.json bin must declare phi and phibrowser')
+const bin = join(pkgRoot, pkg.bin.phi ?? binPaths[0])
+for (const rel of binPaths) {
+  const abs = join(pkgRoot, rel)
+  try {
+    accessSync(abs, constants.X_OK)
+    if (!readFileSync(abs, 'utf8').startsWith('#!/usr/bin/env node')) {
+      fail(`${rel}: missing node shebang`)
+    }
+  } catch { fail(`${rel}: not executable (chmod +x)`) }
+}
 
 // 2. It must run, and agree with package.json about the version — `brew test`
 // and the formula's version stanza both assert on this string.
@@ -37,7 +44,7 @@ const listed = JSON.parse(execFileSync('npm', ['pack', '--dry-run', '--json'], {
   cwd: pkgRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'],
 }))[0].files.map((f) => f.path)
 
-for (const required of ['bin/phibrowser.mjs', 'src/cli.mjs', 'src/render.mjs',
+for (const required of ['bin/phi-cli.mjs', 'src/cli.mjs', 'src/render.mjs',
                         'src/resolve-lib.mjs', 'skill/SKILL.md', 'LICENSE', 'README.md']) {
   if (!listed.includes(required)) fail(`tarball is missing ${required}`)
 }
@@ -55,7 +62,7 @@ try {
   execFileSync(process.execPath, [join(pkgRoot, 'scripts', 'sync-formula.mjs'), '--local', '--check'],
     { cwd: pkgRoot, stdio: ['ignore', 'ignore', 'pipe'], encoding: 'utf8' })
 } catch (err) {
-  fail(`Formula/phibrowser.rb is stale — run: npm run formula -- --local\n` +
+  fail(`Formula/phi-cli.rb is stale — run: npm run formula -- --local\n` +
        String(err.stderr || '').trim().split('\n').map((l) => `      ${l}`).join('\n'))
 }
 

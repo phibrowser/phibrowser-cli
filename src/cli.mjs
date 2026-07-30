@@ -1,6 +1,6 @@
 // Copyright 2026 Phinomenon Inc.
 //
-// phibrowser — command-line browser automation for Phi Browser, modeled on
+// phi — command-line browser automation for Phi Browser, modeled on
 // Microsoft's playwright-cli but backed by Phi's agent Spaces over CDP.
 //
 // Architecture: Phi Browser itself is the daemon. Every invocation is one
@@ -21,7 +21,7 @@ import { dirname, join, resolve as resolvePath } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { installBrowser, latestRelease, releaseIsUsable } from './install-browser.mjs'
 import {
-  appStatus, describeApp, DOWNLOAD_URL, isCanaryBundle, isCapableApp, loadHelpers,
+  appStatus, describeApp, DOWNLOAD_URL, isCapableApp, loadHelpers,
   MIN_APP_VERSION, resolveLibDir, SETTINGS_DEEPLINK,
 } from './resolve-lib.mjs'
 import {
@@ -31,6 +31,14 @@ import {
 } from './render.mjs'
 
 const pkgRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
+
+// The name this was invoked as: `phi` normally, `phibrowser` through the
+// alias, the script name when run straight from a checkout. Help text and
+// error prefixes echo what the user actually typed.
+const PROG = (() => {
+  const raw = (process.argv[1] || '').split('/').pop().replace(/\.mjs$/, '')
+  return raw === 'phibrowser' ? 'phibrowser' : 'phi'
+})()
 
 const DEFAULT_SESSION = 'cli'
 const DEFAULT_MAX_ELEMENTS = 150
@@ -165,7 +173,7 @@ cmd({
   context: 'page',
   async run(ctx) {
     const pending = ctx.task?.pendingUserMessages
-    if (pending) ctx.print(`! ${pending} pending user message(s) — run \`phibrowser messages\` first`)
+    if (pending) ctx.print(`! ${pending} pending user message(s) — run \`${PROG} messages\` first`)
     if (ctx.args[0]) {
       await ctx.h.openTab(ctx.args[0], {
         reuseBlank: !ctx.flags['new-tab'],
@@ -276,7 +284,7 @@ cmd({
       ctx.print(renderJson(r))
     } else {
       await ctx.h.handOff(msg)
-      ctx.print('ok: handed off — resume after hand-back with `phibrowser watch`')
+      ctx.print(`ok: handed off — resume after hand-back with \`${PROG} watch\``)
     }
   },
 })
@@ -1215,7 +1223,7 @@ cmd({
 
 cmd({
   name: 'install', group: 'Session', sig: 'install --skills | --browser',
-  desc: 'Install the phibrowser-cli skill file, or Phi Browser itself',
+  desc: 'Install the phi-cli skill file, or Phi Browser itself',
   flags: {
     skills: { type: 'bool', desc: 'install SKILL.md into agent skill directories' },
     browser: { type: 'bool', desc: 'download and install Phi Browser from the official update feed' },
@@ -1251,7 +1259,7 @@ cmd({
     const installed = []
     for (const { dir, always } of roots) {
       if (!always && !existsSync(dir)) continue
-      const dest = join(dir, 'phibrowser-cli')
+      const dest = join(dir, 'phi-cli')
       mkdirSync(dest, { recursive: true })
       writeFileSync(join(dest, 'SKILL.md'), content)
       installed.push(join(dest, 'SKILL.md'))
@@ -1928,8 +1936,8 @@ function flagLines(pool) {
 function helpText(topic) {
   if (topic) {
     const c = COMMANDS.find((x) => x.name === topic)
-    if (!c) return `phibrowser: unknown command "${topic}"`
-    const lines = [`phibrowser ${c.sig}`, `  ${c.desc}`]
+    if (!c) return `${PROG}: unknown command "${topic}"`
+    const lines = [`${PROG} ${c.sig}`, `  ${c.desc}`]
     if (c.flags) lines.push('', 'Flags:', ...flagLines(c.flags))
     return lines.join('\n')
   }
@@ -1939,9 +1947,9 @@ function helpText(topic) {
     groups.get(c.group).push(`  ${c.sig.padEnd(46)} ${c.desc}`)
   }
   const lines = [
-    `phibrowser v${version()} — drive Phi Browser from the command line`,
+    `${PROG} v${version()} — drive Phi Browser from the command line`,
     '',
-    'Usage: phibrowser [-s <session>] <command> [args] [flags]',
+    `Usage: ${PROG} [-s <session>] <command> [args] [flags]`,
     '',
     'Each session is an agent Space in the running Phi Browser: a hidden window',
     'reusing the user\'s login state, watchable from the Space switcher. Refs',
@@ -2136,7 +2144,7 @@ async function offerInstall(d) {
     if (await confirm('\nLaunch it now? [Y/n] ')) openMac(['-a', app])
     return 5
   } catch (err) {
-    console.error(`\nphibrowser: install failed — ${err.message}`)
+    console.error(`\n${PROG}: install failed — ${err.message}`)
     if (await confirm(`Open ${DOWNLOAD_URL} to install it yourself? [Y/n] `)) openMac([DOWNLOAD_URL])
     return 5
   }
@@ -2148,7 +2156,7 @@ async function reportNoBrowser(flags, detail) {
   const d = diagnoseBrowser()
 
   if (d.kind === 'absent' || d.kind === 'outdated') {
-    console.error(`phibrowser: ${d.kind === 'absent'
+    console.error(`${PROG}: ${d.kind === 'absent'
       ? detail?.message ?? 'Phi Browser is not installed. The CLI drives the app — ' +
         `it needs Phi Browser ${MIN_APP_VERSION}+ (free, macOS): ${DOWNLOAD_URL}`
       : `Phi Browser ${d.version} at ${d.app} is older than ${MIN_APP_VERSION}, ` +
@@ -2165,7 +2173,7 @@ async function reportNoBrowser(flags, detail) {
   // An installed, current app that still yielded no engine is a broken or
   // partial bundle — not something the user can fix by toggling anything.
   if (detail?.code === 'phi_engine_missing') {
-    console.error(`phibrowser: ${detail.message}`)
+    console.error(`${PROG}: ${detail.message}`)
     console.error('Looked in:\n' + detail.searched.map((p) => `  - ${p}`).join('\n'))
     return 5
   }
@@ -2174,16 +2182,20 @@ async function reportNoBrowser(flags, detail) {
   // only when the version did not already say so (unnumbered dev builds, or
   // an engine pinned via $PHIBROWSER_CLI_LIB).
   if (detail?.code === 'engine_too_old') {
-    console.error(`phibrowser: this Phi Browser's automation engine predates the CLI ` +
-      `(no ${detail.missing.join(', ')}) — update Phi Browser` +
-      (d.app && isCanaryBundle(d.app) ? ' Canary to a current build.'
-        : ` to ${MIN_APP_VERSION}+ (Phi ▸ Check for Updates…, or ${DOWNLOAD_URL}).`))
-    console.error(`Engine loaded from: ${resolveLibDir()}`)
+    // Name the build the engine came from, which is not necessarily the one
+    // running: with a stale stable installed and Canary running elsewhere,
+    // the engine resolves from the stable bundle and that is what to update.
+    const from = resolveLibDir()
+    console.error(`${PROG}: this Phi Browser's automation engine predates the CLI ` +
+      `(no ${detail.missing.join(', ')}) — update ` +
+      (/\/Phi Canary\.app\//.test(from) ? 'Phi Canary to a current build.'
+        : `Phi Browser to ${MIN_APP_VERSION}+ (Phi ▸ Check for Updates…, or ${DOWNLOAD_URL}).`))
+    console.error(`Engine loaded from: ${from}`)
     return 5
   }
 
   if (d.kind === 'stopped') {
-    console.error('phibrowser: Phi Browser is installed but not running — start it, then retry.')
+    console.error(`${PROG}: Phi Browser is installed but not running — start it, then retry.`)
     if (canPrompt(flags) && await confirm(`\nStart ${d.app} now? [Y/n] `)) {
       openMac(['-a', d.app])
       console.error('Launching Phi Browser — retry once it is up.')
@@ -2191,7 +2203,7 @@ async function reportNoBrowser(flags, detail) {
     return 5
   }
 
-  console.error('phibrowser: Phi Browser is running, but agent control is off. Enable\n' +
+  console.error(`${PROG}: Phi Browser is running, but agent control is off. Enable\n` +
     'Settings ▸ Developer ▸ Remote debugging ▸ "Allow agents to control Phi (CDP)"\n' +
     '— it applies immediately, no relaunch — then approve this agent when asked.')
   if (canPrompt(flags) && await confirm('\nOpen that Settings page now? [Y/n] ')) {
@@ -2206,7 +2218,7 @@ export async function main(argv) {
   try {
     parsed = parseArgv(argv)
   } catch (err) {
-    console.error(`phibrowser: ${err.message}`)
+    console.error(`${PROG}: ${err.message}`)
     return 2
   }
   const { command, cmdDef, args, flags } = parsed
@@ -2217,7 +2229,7 @@ export async function main(argv) {
     return command || flags.help ? 0 : 2
   }
   if (!cmdDef) {
-    console.error(`phibrowser: unknown command "${command}" (try \`phibrowser help\`)`)
+    console.error(`${PROG}: unknown command "${command}" (try \`${PROG} help\`)`)
     return 2
   }
 
@@ -2237,10 +2249,10 @@ export async function main(argv) {
       return 0
     } catch (err) {
       if (err instanceof UsageError) {
-        console.error(`phibrowser ${command}: ${err.message}`)
+        console.error(`${PROG} ${command}: ${err.message}`)
         return 2
       }
-      console.error(`phibrowser ${command}: ${err?.message || err}`)
+      console.error(`${PROG} ${command}: ${err?.message || err}`)
       return 1
     }
   }
@@ -2252,7 +2264,7 @@ export async function main(argv) {
     if (err?.code === 'phi_not_installed' || err?.code === 'phi_engine_missing') {
       return await reportNoBrowser(flags, err)
     }
-    console.error(`phibrowser: ${err?.message || err}`)
+    console.error(`${PROG}: ${err?.message || err}`)
     return 1
   }
 
@@ -2281,7 +2293,7 @@ export async function main(argv) {
   } catch (err) {
     const msg = err?.message || String(err)
     if (err instanceof UsageError) {
-      console.error(`phibrowser ${command}: ${msg}`)
+      console.error(`${PROG} ${command}: ${msg}`)
       console.error(helpText(command))
       return 2
     }
@@ -2290,10 +2302,10 @@ export async function main(argv) {
     // from one that is closed from one with the toggle off — the ladder can,
     // so it replaces that message rather than piling on after it.
     if (/CDP endpoint not found/i.test(msg)) return await reportNoBrowser(flags, null)
-    console.error(scrub(`phibrowser ${command}: ${msg}`))
+    console.error(scrub(`${PROG} ${command}: ${msg}`))
     if (/user is controlling/i.test(msg)) {
       console.error('The user holds control of this Space. Wait for hand-back with ' +
-                    '`phibrowser watch`, or ask them, then `phibrowser takeover`.')
+                    `\`${PROG} watch\`, or ask them, then \`${PROG} takeover\`.`)
       return 3
     }
     if (/user_space_operations_disabled/i.test(msg)) {

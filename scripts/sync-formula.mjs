@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Copyright 2026 Phinomenon Inc.
 //
-// Points Formula/phibrowser.rb at this package.json's version and stamps the
+// Points Formula/phi-cli.rb at this package.json's version and stamps the
 // tarball's sha256, so `brew install` and `npm install` always ship the same
 // bytes. Two sources for those bytes:
 //
@@ -19,7 +19,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const pkgRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
-const formulaPath = join(pkgRoot, 'Formula', 'phibrowser.rb')
+const formulaPath = join(pkgRoot, 'Formula', 'phi-cli.rb')
 const pkg = JSON.parse(readFileSync(join(pkgRoot, 'package.json'), 'utf8'))
 
 const args = process.argv.slice(2)
@@ -80,6 +80,6 @@ if (check) {
 }
 
 writeFileSync(formulaPath, after)
-console.log(`${after === before ? 'unchanged' : 'updated'} Formula/phibrowser.rb`)
+console.log(`${after === before ? 'unchanged' : 'updated'} Formula/phi-cli.rb`)
 console.log(`  url    ${url}`)
 console.log(`  sha256 ${digest}${local ? '  (from local npm pack)' : ''}`)

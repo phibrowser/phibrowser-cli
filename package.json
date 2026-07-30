@@ -21,7 +21,8 @@
   "author": "Phinomenon Inc.",
   "type": "module",
   "bin": {
-    "phibrowser": "bin/phibrowser.mjs"
+    "phi": "bin/phi-cli.mjs",
+    "phibrowser": "bin/phi-cli.mjs"
   },
   "files": [
     "bin/",
@@ -40,7 +41,7 @@
     "access": "public"
   },
   "scripts": {
-    "smoke": "node bin/phibrowser.mjs --version",
+    "smoke": "node bin/phi-cli.mjs --version",
     "test": "node test/cli.test.mjs",
     "prepublishOnly": "node scripts/preflight.mjs",
     "formula": "node scripts/sync-formula.mjs"

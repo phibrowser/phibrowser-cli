@@ -1,14 +1,15 @@
 # Copyright 2026 Phinomenon Inc.
 #
-# Canonical source for the phibrowser Homebrew formula. `npm run formula`
+# Canonical source for the phi-cli Homebrew formula. `npm run formula`
 # rewrites url/sha256 from the published registry tarball; ship it by copying
 # this file into the phibrowser/homebrew-tap repo (see RELEASING.md), which is
-# what `brew install phibrowser/tap/phibrowser` reads.
-class Phibrowser < Formula
-  desc "Command-line browser automation for Phi Browser"
+# what `brew install phibrowser/tap/phi-cli` reads. That tap's `phi` cask is
+# the browser; this formula is the CLI that drives it.
+class PhiCli < Formula
+  desc "Command-line automation for the Phi Browser app"
   homepage "https://github.com/phibrowser/phibrowser-cli"
   url "https://registry.npmjs.org/@phibrowser/cli/-/cli-0.1.0.tgz"
-  sha256 "0decda6fb38346e0f810235c80aa3f4a7cc80edb6649ad605d78ad2b7d1e836f"
+  sha256 "9ec34472c4221f96f503bc1416ec2da5b57ca67553a0a8dad0185ada60cbd378"
   license "Apache-2.0"
 
   # The CLI drives the Phi Browser macOS app over its app-owned Unix socket.
@@ -22,10 +23,11 @@ class Phibrowser < Formula
 
   def caveats
     <<~EOS
-      phibrowser drives a running Phi Browser — it is a client, not a browser.
-      It loads the automation engine that ships inside the app bundle, so:
+      The `phi` command drives a running Phi Browser — it is a client, not
+      a browser. It loads the automation engine that ships inside the app
+      bundle, so:
 
-        1. Install Phi Browser:  https://phibrowser.com
+        1. Install Phi Browser:  brew install --cask phibrowser/tap/phi
         2. Enable Settings > Developer > Remote debugging >
            "Allow agents to control Phi (CDP)"
 
@@ -35,10 +37,11 @@ class Phibrowser < Formula
   end
 
   # Kept hermetic: every other command needs a running Phi Browser, whose
-  # presence differs machine to machine.
+  # presence differs machine to machine. `phibrowser` is installed too, as a
+  # compatibility alias for the same entry point.
   test do
-    assert_equal version.to_s, shell_output("#{bin}/phibrowser --version").strip
+    assert_equal version.to_s, shell_output("#{bin}/phi --version").strip
     assert_match "drive Phi Browser from the command line",
-                 shell_output("#{bin}/phibrowser --help")
+                 shell_output("#{bin}/phi --help")
   end
 end
