@@ -46,7 +46,9 @@ the engine is always the one that shipped with the Phi Browser build it talks
 to. Resolution order:
 
 1. `$PHIBROWSER_CLI_LIB` (explicit `scripts/lib` dir)
-2. `$PHIBROWSER_APP` (explicit Phi Browser bundle)
+2. `$PHIBROWSER_APP` (explicit Phi Browser bundle — exclusive: when set, no
+   other bundle is searched, so a wrong value is reported rather than
+   silently swapped for another install)
 3. sibling checkout `../phibrowser-mac/tools/phi-browser-skill/scripts/lib`
 4. installed app: `Phi Canary.app` then `Phi.app`, in `/Applications` and
    `~/Applications` — the bundle carries the whole skill under
@@ -86,8 +88,10 @@ Releasing (publish + Homebrew tap sync) is documented in
 ## Requirements
 
 - macOS (the package is `os: darwin`) and Node ≥ 22
-- Phi Browser installed — the CLI is a client, not a browser, and loads the
-  engine that ships in the app bundle
+- Phi Browser **2.4.0+** installed — the CLI is a client, not a browser, and
+  loads the engine that ships in the app bundle. Run it without one and it
+  offers to install it for you (see [Exit codes](#exit-codes)); Canary is
+  exempt from the version floor
 - Phi Browser running, with Settings ▸ Developer ▸ Remote debugging ▸ "Allow
   agents to control Phi (CDP)" enabled (the raw `--remote-debugging-port` is
   not enough — agent Spaces need the authenticated app socket)
@@ -147,7 +151,7 @@ per-command flags.
 
 | Group | Commands |
 |---|---|
-| Session | `open` `close` `close-all` `sessions` `profiles` `status` `ping` `narrate` `messages` `handoff` `takeover` `watch` `run-code` `install --skills` |
+| Session | `open` `close` `close-all` `sessions` `profiles` `status` `ping` `narrate` `messages` `handoff` `takeover` `watch` `run-code` `install --skills/--browser` |
 | Navigation | `goto` `reload` `back` `forward` `tabs` `tab-new` `tab-select` `tab-close` |
 | Observe | `snapshot` (`--filename`) `find` `screenshot` `pdf` `archive` `eval` (`--on`) `console` `requests` `info` `challenge` `highlight` |
 | Act | `click` `hover` `fill` `type` `press` `check` `uncheck` `select` `drag` `scroll` `upload` `dialog` `accept-cookies` `viewport` `keydown` `keyup` `mousemove` `mousedown` `mouseup` `mousewheel` |
@@ -204,7 +208,8 @@ Space, and re-attaching to that Space's selected tab each invocation. Notes:
 (the element-scoped `eval`). `run-code` pipes a phi-browser heredoc script
 bound to the session — the escape hatch for anything without a dedicated
 command. `install --skills` writes `skill/SKILL.md` into the agent skill dirs
-that exist (`~/.claude`, `~/.codex`, `~/.pi/agent`).
+that exist (`~/.claude`, `~/.codex`, `~/.pi/agent`); `install --browser`
+installs Phi Browser itself (see [Exit codes](#exit-codes)).
 
 ### Config file
 
@@ -271,4 +276,71 @@ assertions; without it, that group is skipped.
 ## Exit codes
 
 `0` ok · `1` command failed · `2` usage · `3` user holds control ·
-`4` browser-management disabled
+`4` browser-management disabled · `5` no usable Phi Browser
+
+Exit **5** means there is no browser to drive, so retrying is pointless until
+a human acts. The CLI walks one ladder to say *which* thing to do, in the
+order you'd have to do them — each rung's advice is wrong for the rungs above
+it, and telling someone on an old build to find a Settings toggle it doesn't
+have is the case this avoids:
+
+| | Situation | What it does |
+|---|---|---|
+| 1 | No Phi Browser installed | **offers to install it for you** (see below) |
+| 2 | Stable Phi older than **2.4.0** | **offers to update it** — agent control starts at 2.4.0 |
+| 3 | Installed and current, not running | offers to launch it |
+| 4 | Running, but agent control off | offers to open Settings ▸ General to enable it |
+
+**Canary is exempt from rung 2**: it is the prerelease channel and versions
+itself by name, so it is never called out of date. Rung 2 also fires when an
+older engine loads and lacks the entry points the CLI drives — probed rather
+than inferred, so a build that reports no version number is given the benefit
+of the doubt. The diagnosis judges a *running* browser when there is one, so
+a stale copy in `/Applications` never indicts a current build running from
+elsewhere.
+
+The offers never block an agent: no prompt unless stdin *and* stderr are
+TTYs, and never with `--json`, `--quiet`, `$CI`, or `$PHIBROWSER_NO_PROMPT`.
+Unanswered after 20s it declines and exits.
+
+### Installing Phi Browser from the CLI
+
+Answering **Y** at rung 1 or 2 installs the browser rather than just opening a
+web page:
+
+```
+phibrowser: Phi Browser is not installed. The CLI drives the app — it needs
+Phi Browser 2.4.0+ (free, macOS): https://phibrowser.com
+
+Install Phi Browser 2.4.0 now? [Y/n] y
+Downloading Phi Browser 2.4.0 (329 MB)…
+  10% … 100%
+Verifying signature…
+Installed /Applications/Phi.app
+
+Next: launch Phi Browser and enable Settings ▸ Developer ▸ Remote
+debugging ▸ "Allow agents to control Phi (CDP)", then run this again.
+```
+
+Same thing without a terminal, for scripts and provisioning:
+
+```bash
+phibrowser install --browser              # download, verify, install
+phibrowser install --browser --dry-run    # report the release, download nothing
+```
+
+It comes from Phi's own update feed — the Sparkle appcast the app itself
+updates from (`https://ota.phibrowser.com/mac-public/…`) — so it is the same
+build and the same channel, never a scraped link. Trust is **pinned in the
+CLI**, since a machine with no Phi on it has nothing to read it from: the
+update host, Sparkle's `SUPublicEDKey`, and Developer ID team `87DQ3HMK5G`.
+Nothing is unpacked before its EdDSA signature verifies against that key, and
+nothing is moved into place before `codesign` confirms that team and
+Gatekeeper accepts the bundle. `/Applications` is used when it is writable,
+`~/Applications` otherwise (the resolver searches both).
+
+Two refusals are deliberate. A published release **below the 2.4.0 floor** is
+not installed — you would get a browser this CLI still declines to drive — so
+it says so and points at the download page instead. And a **running** Phi is
+never replaced in place; quit it, or use Phi ▸ Check for Updates… inside the
+app, which is what Sparkle is for.

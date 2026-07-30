@@ -17,7 +17,7 @@
 // do not fail the suite.
 
 import { spawn } from 'node:child_process'
-import { existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -50,9 +50,10 @@ const FIXTURE = 'data:text/html,' + encodeURIComponent(FIXTURE_HTML)
 // ---------------------------------------------------------------------------
 // Runner + assertions
 
-function run(args, { input, timeoutMs = 60000 } = {}) {
+function run(args, { input, timeoutMs = 60000, env } = {}) {
   return new Promise((resolve) => {
-    const child = spawn(process.execPath, [BIN, ...args], { stdio: ['pipe', 'pipe', 'pipe'] })
+    const child = spawn(process.execPath, [BIN, ...args],
+      { stdio: ['pipe', 'pipe', 'pipe'], ...(env ? { env: { ...process.env, ...env } } : {}) })
     let out = '', err = '', timedOut = false
     const timer = setTimeout(() => { timedOut = true; child.kill('SIGKILL') }, timeoutMs)
     child.stdout.on('data', (d) => { out += d })
@@ -115,6 +116,51 @@ async function main() {
     console.error('Cannot reach Phi Browser CDP. Start Phi (Canary) with agent CDP enabled.\n' + pre.err)
     process.exit(2)
   }
+
+  // ===== No usable browser =================================================
+  // $PHIBROWSER_APP pins the app exclusively, so aiming it at nothing
+  // simulates a machine without Phi Browser even on one that has it.
+  console.log('\n# No browser')
+  const ABSENT = { PHIBROWSER_APP: join(TMP, 'Absent.app') }
+  await T('missing Phi Browser → exit 5, names the install', async () => {
+    const r = await run(['open', FIXTURE], { env: ABSENT, timeoutMs: 30000 })
+    assert(r.code === 5, `expected exit 5, got ${r.code}`)
+    assertHas(clean(r), 'https://phibrowser.com', 'install prompt')
+  })
+  await T('missing Phi Browser → never blocks a non-TTY caller', async () => {
+    const r = await run(['tabs'], { env: ABSENT, timeoutMs: 30000 })
+    assert(!r.timedOut, 'CLI hung waiting on input')
+    assert(!/\[Y\/n\]/.test(clean(r)), 'prompted a non-interactive caller')
+  })
+  await T('bundle without the engine → distinct diagnosis', async () => {
+    const app = join(TMP, 'Engineless.app')
+    mkdirSync(join(app, 'Contents', 'MacOS'), { recursive: true })
+    const r = await run(['tabs'], { env: { PHIBROWSER_APP: app }, timeoutMs: 30000 })
+    assert(r.code === 5, `expected exit 5, got ${r.code}`)
+    assertHas(clean(r), 'does not ship the automation engine', 'engine-missing diagnosis')
+  })
+
+  // Version gate: stable below the floor is told to update; Canary is the
+  // prerelease channel and is never judged on its version number.
+  const fakeApp = (name, version) => {
+    const app = join(TMP, name)
+    mkdirSync(join(app, 'Contents', 'MacOS'), { recursive: true })
+    writeFileSync(join(app, 'Contents', 'Info.plist'),
+      '<?xml version="1.0" encoding="UTF-8"?>\n<plist version="1.0"><dict>' +
+      `<key>CFBundleShortVersionString</key><string>${version}</string></dict></plist>\n`)
+    return app
+  }
+  await T('stable below 2.4.0 → update, not "enable" or "install"', async () => {
+    const r = await run(['tabs'], { env: { PHIBROWSER_APP: fakeApp('Phi.app', '2.3.0') }, timeoutMs: 30000 })
+    assert(r.code === 5, `expected exit 5, got ${r.code}`)
+    assertHas(clean(r), 'older than 2.4.0', 'outdated diagnosis')
+    assert(!/is not installed/.test(clean(r)), 'told an existing install it was absent')
+  })
+  await T('Canary is exempt from the version gate', async () => {
+    const r = await run(['tabs'], { env: { PHIBROWSER_APP: fakeApp('Phi Canary.app', '2.3.0') }, timeoutMs: 30000 })
+    assert(!/older than/.test(clean(r)), 'called Canary outdated')
+    assert(!/is not installed/.test(clean(r)), 'told a Canary user to install')
+  })
 
   // ===== Session bootstrap + page fixture ==================================
   console.log('\n# Session + Observe')

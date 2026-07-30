@@ -33,6 +33,10 @@ for (const signal of ['SIGINT', 'SIGTERM']) {
 let code = 1
 try {
   code = await main(process.argv.slice(2))
+} catch (err) {
+  // main() maps every expected failure to an exit code; anything reaching here
+  // is a bug, and must still read as a CLI error rather than a bare rejection.
+  console.error(`phibrowser: ${err?.stack || err?.message || err}`)
 } finally {
   await disposeHelpers()
 }

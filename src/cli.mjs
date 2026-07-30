@@ -14,12 +14,16 @@
 // next. observe() diff baselines persist on disk, so `--diff` and the
 // after-action change summaries also work across invocations.
 
-import { spawn } from 'node:child_process'
+import { execFileSync, spawn } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join, resolve as resolvePath } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { loadHelpers, resolveLibDir } from './resolve-lib.mjs'
+import { installBrowser, latestRelease, releaseIsUsable } from './install-browser.mjs'
+import {
+  appStatus, describeApp, DOWNLOAD_URL, isCanaryBundle, isCapableApp, loadHelpers,
+  MIN_APP_VERSION, resolveLibDir, SETTINGS_DEEPLINK,
+} from './resolve-lib.mjs'
 import {
   renderBookmarks, renderDownloads, renderJson, renderObserve,
   renderPinnedTabs, renderProfiles, renderSpaces, renderSpaceTabs,
@@ -1210,12 +1214,32 @@ cmd({
 })
 
 cmd({
-  name: 'install', group: 'Session', sig: 'install --skills',
-  desc: 'Install the phibrowser-cli skill file for coding agents',
-  flags: { skills: { type: 'bool', desc: 'install SKILL.md into agent skill directories' } },
+  name: 'install', group: 'Session', sig: 'install --skills | --browser',
+  desc: 'Install the phibrowser-cli skill file, or Phi Browser itself',
+  flags: {
+    skills: { type: 'bool', desc: 'install SKILL.md into agent skill directories' },
+    browser: { type: 'bool', desc: 'download and install Phi Browser from the official update feed' },
+    'dry-run': { type: 'bool', desc: 'with --browser: report what would be installed, download nothing' },
+  },
   context: 'none',
   async run(ctx) {
-    if (!ctx.flags.skills) throw new UsageError('only `install --skills` is supported')
+    // The same installer the missing-browser prompt runs, reachable without
+    // a TTY so scripts and agents can provision deliberately.
+    if (ctx.flags.browser) {
+      const release = await latestRelease()
+      if (!releaseIsUsable(release)) {
+        throw new Error(`the current stable release is ${release.version}, below the ` +
+          `${MIN_APP_VERSION} agent control needs — nothing worth installing yet`)
+      }
+      if (ctx.flags['dry-run']) {
+        ctx.print(`would install Phi Browser ${release.version}\n  ${release.url}`)
+        return
+      }
+      const app = await installBrowser({ release, log: (line) => console.error(line) })
+      ctx.print(`ok: ${app}`)
+      return
+    }
+    if (!ctx.flags.skills) throw new UsageError('need --skills or --browser')
     const src = join(pkgRoot, 'skill', 'SKILL.md')
     if (!existsSync(src)) throw new Error(`skill file missing: ${src}`)
     const content = readFileSync(src, 'utf8')
@@ -1983,6 +2007,200 @@ async function resolveContext(h, cmdDef, flags, session) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// No usable browser (exit 5)
+//
+// The CLI is a client: with no Phi Browser there is nothing to drive and no
+// engine to load. Exit 5 keeps that separate from "the command failed" (1),
+// so a driving agent can tell "retrying won't help until a human installs or
+// starts the app" from a page-level error.
+
+/**
+ * Bundle paths of the Phi Browsers running right now, wherever they live —
+ * a dev build under DerivedData counts, and is the one a round would reach.
+ * Helper/Sentinel/Updater processes nest their own .app inside the browser's,
+ * so match only paths whose bundle is the browser itself.
+ */
+function runningApps() {
+  let ps = ''
+  try {
+    ps = execFileSync('ps', ['-axo', 'command='], { encoding: 'utf8', maxBuffer: 16e6 })
+  } catch { return [] }
+  const apps = new Set()
+  for (const line of ps.split('\n')) {
+    // existsSync guards the loose match: bundle names contain spaces, so the
+    // path cannot be anchored to a single argv token.
+    const m = /^(\/.*?\.app)\/Contents\/MacOS\//.exec(line)
+    if (m && /\/Phi( Canary)?\.app$/.test(m[1]) && existsSync(m[1])) apps.add(m[1])
+  }
+  // $PHIBROWSER_APP pins the app for diagnosis too, exactly as it does for
+  // the engine — otherwise another install running nearby answers for it.
+  const pinned = process.env.PHIBROWSER_APP?.replace(/\/+$/, '')
+  return [...apps].filter((app) => !pinned || app === pinned)
+}
+
+// Only offer when a human is plausibly watching. Agents commonly run us under
+// a pty (isTTY true, nobody reading), so the ask also self-cancels.
+function canPrompt(flags) {
+  return Boolean(process.stdin.isTTY && process.stderr.isTTY &&
+    !flags.json && !flags.quiet && !process.env.CI && !process.env.PHIBROWSER_NO_PROMPT)
+}
+
+// Enter accepts; no answer within the timeout declines. A plain setTimeout
+// rather than AbortSignal.timeout(), whose timer is unref'd and so is not
+// guaranteed to run the cancel when nothing else holds the loop open.
+async function confirm(question, timeoutMs = 20000) {
+  const { createInterface } = await import('node:readline/promises')
+  const rl = createInterface({ input: process.stdin, output: process.stderr })
+  const ac = new AbortController()
+  const timer = setTimeout(() => ac.abort(), timeoutMs)
+  try {
+    const answer = await rl.question(question, { signal: ac.signal })
+    return /^(y|yes)?$/i.test(answer.trim())
+  } catch {
+    process.stderr.write('\n')
+    return false
+  } finally {
+    clearTimeout(timer)
+    rl.close()
+  }
+}
+
+/**
+ * The one ladder every "cannot drive a browser" path walks, in the order the
+ * user has to fix things: install it → update it → start it → enable it.
+ * Each rung's advice is wrong for the rungs above it — telling someone on an
+ * old build to find a Settings toggle it does not have is the case to avoid.
+ */
+function diagnoseBrowser() {
+  // A running browser is the one a round actually reaches, so judge that one
+  // — otherwise a stale old copy in /Applications would indict a current
+  // build running from anywhere else.
+  const running = runningApps().map(describeApp)
+  if (running.length) {
+    const capable = running.find(isCapableApp)
+    return capable ? { kind: 'enabled', app: capable.app } : { kind: 'outdated', ...running[0] }
+  }
+  const { app, version, canary, outdated } = appStatus()
+  if (!app) return { kind: 'absent' }
+  if (outdated) return { kind: 'outdated', app, version }
+  return { kind: 'stopped', app, canary }
+}
+
+// `open -a <app>` launches that exact bundle; with a url it also routes the
+// url to it, which matters while two Phi builds are registered for phi://.
+function openMac(args) {
+  spawn('open', args, { stdio: 'ignore', detached: true }).unref()
+}
+
+/**
+ * Ask, then actually do it. Answering yes downloads the release from Phi's
+ * own Sparkle feed and installs it after both signature checks pass; the
+ * download page is the fallback for every path that cannot get there.
+ */
+async function offerInstall(d) {
+  const verb = d.kind === 'outdated' ? 'Update' : 'Install'
+  let release
+  try {
+    release = await latestRelease()
+  } catch (err) {
+    console.error(`(could not reach the update feed: ${err.message})`)
+    if (await confirm(`\nOpen ${DOWNLOAD_URL} instead? [Y/n] `)) openMac([DOWNLOAD_URL])
+    return 5
+  }
+
+  // The published release can still be behind what the CLI needs; installing
+  // it anyway would hand the user a browser this CLI refuses to drive.
+  if (!releaseIsUsable(release)) {
+    console.error(`\nThe current stable release is ${release.version}, still below the ` +
+      `${MIN_APP_VERSION} that agent control needs — installing it would not help yet.`)
+    if (await confirm(`Open ${DOWNLOAD_URL} to check the channels? [Y/n] `)) openMac([DOWNLOAD_URL])
+    return 5
+  }
+
+  if (d.kind === 'outdated' && runningApps().includes(d.app)) {
+    console.error(`\nQuit Phi Browser first — it is running and cannot replace itself. ` +
+      'Or use Phi ▸ Check for Updates… inside the app.')
+    return 5
+  }
+
+  if (!await confirm(`\n${verb} Phi Browser ${release.version} now? [Y/n] `)) {
+    console.error(`Skipped. ${DOWNLOAD_URL} has the download when you want it.`)
+    return 5
+  }
+
+  try {
+    const app = await installBrowser({ release, log: (line) => console.error(line) })
+    console.error('\nNext: launch Phi Browser and enable Settings ▸ Developer ▸ Remote\n' +
+                  'debugging ▸ "Allow agents to control Phi (CDP)", then run this again.')
+    if (await confirm('\nLaunch it now? [Y/n] ')) openMac(['-a', app])
+    return 5
+  } catch (err) {
+    console.error(`\nphibrowser: install failed — ${err.message}`)
+    if (await confirm(`Open ${DOWNLOAD_URL} to install it yourself? [Y/n] `)) openMac([DOWNLOAD_URL])
+    return 5
+  }
+}
+
+// `detail` is the failure that got us here: the engine load error, or null
+// when the engine loaded but no endpoint answered.
+async function reportNoBrowser(flags, detail) {
+  const d = diagnoseBrowser()
+
+  if (d.kind === 'absent' || d.kind === 'outdated') {
+    console.error(`phibrowser: ${d.kind === 'absent'
+      ? detail?.message ?? 'Phi Browser is not installed. The CLI drives the app — ' +
+        `it needs Phi Browser ${MIN_APP_VERSION}+ (free, macOS): ${DOWNLOAD_URL}`
+      : `Phi Browser ${d.version} at ${d.app} is older than ${MIN_APP_VERSION}, ` +
+        'which is where agent control begins — this CLI cannot drive it.'}`)
+    if (canPrompt(flags)) {
+      return await offerInstall(d)
+    }
+    if (d.kind === 'outdated') {
+      console.error(`Update it (Phi ▸ Check for Updates…) or download ${MIN_APP_VERSION}+: ${DOWNLOAD_URL}`)
+    }
+    return 5
+  }
+
+  // An installed, current app that still yielded no engine is a broken or
+  // partial bundle — not something the user can fix by toggling anything.
+  if (detail?.code === 'phi_engine_missing') {
+    console.error(`phibrowser: ${detail.message}`)
+    console.error('Looked in:\n' + detail.searched.map((p) => `  - ${p}`).join('\n'))
+    return 5
+  }
+
+  // Engine loaded, but from a build older than the CLI's surface. Reached
+  // only when the version did not already say so (unnumbered dev builds, or
+  // an engine pinned via $PHIBROWSER_CLI_LIB).
+  if (detail?.code === 'engine_too_old') {
+    console.error(`phibrowser: this Phi Browser's automation engine predates the CLI ` +
+      `(no ${detail.missing.join(', ')}) — update Phi Browser` +
+      (d.app && isCanaryBundle(d.app) ? ' Canary to a current build.'
+        : ` to ${MIN_APP_VERSION}+ (Phi ▸ Check for Updates…, or ${DOWNLOAD_URL}).`))
+    console.error(`Engine loaded from: ${resolveLibDir()}`)
+    return 5
+  }
+
+  if (d.kind === 'stopped') {
+    console.error('phibrowser: Phi Browser is installed but not running — start it, then retry.')
+    if (canPrompt(flags) && await confirm(`\nStart ${d.app} now? [Y/n] `)) {
+      openMac(['-a', d.app])
+      console.error('Launching Phi Browser — retry once it is up.')
+    }
+    return 5
+  }
+
+  console.error('phibrowser: Phi Browser is running, but agent control is off. Enable\n' +
+    'Settings ▸ Developer ▸ Remote debugging ▸ "Allow agents to control Phi (CDP)"\n' +
+    '— it applies immediately, no relaunch — then approve this agent when asked.')
+  if (canPrompt(flags) && await confirm('\nOpen that Settings page now? [Y/n] ')) {
+    openMac(['-a', d.app, SETTINGS_DEEPLINK])
+    console.error('Opened Settings ▸ General — the Developer section is there.')
+  }
+  return 5
+}
+
 export async function main(argv) {
   let parsed
   try {
@@ -2027,7 +2245,23 @@ export async function main(argv) {
     }
   }
 
-  const h = helpersRef = await loadHelpers()
+  let h
+  try {
+    h = helpersRef = await loadHelpers()
+  } catch (err) {
+    if (err?.code === 'phi_not_installed' || err?.code === 'phi_engine_missing') {
+      return await reportNoBrowser(flags, err)
+    }
+    console.error(`phibrowser: ${err?.message || err}`)
+    return 1
+  }
+
+  // A pre-2.4.0 Phi still ships an engine — an older one, without the entry
+  // points this CLI drives. Probe for them rather than trusting a version
+  // string (dev builds report a name), so the user gets "update Phi Browser"
+  // instead of a TypeError from the first call.
+  const missing = ['enterContext', 'observe'].filter((fn) => typeof h[fn] !== 'function')
+  if (missing.length) return await reportNoBrowser(flags, { code: 'engine_too_old', missing })
   const scrub = h.__scrubSessionSecrets ?? ((t) => t)
   const ctx = {
     h, args, flags, session,
@@ -2051,6 +2285,11 @@ export async function main(argv) {
       console.error(helpText(command))
       return 2
     }
+    // Before the generic report: the engine can only say "endpoint not
+    // found" and guess at the toggle. It cannot tell an app that is too old
+    // from one that is closed from one with the toggle off — the ladder can,
+    // so it replaces that message rather than piling on after it.
+    if (/CDP endpoint not found/i.test(msg)) return await reportNoBrowser(flags, null)
     console.error(scrub(`phibrowser ${command}: ${msg}`))
     if (/user is controlling/i.test(msg)) {
       console.error('The user holds control of this Space. Wait for hand-back with ' +

@@ -76,6 +76,9 @@ phibrowser -s <task> close          # complete the task when done
 
 - Exit code 3 = the USER holds control. Do not retry or `takeover` on your
   own: run `phibrowser watch` (backgrounded, tracked) and wait for hand-back.
+- Exit code 5 = no usable Phi Browser: not installed, stable older than
+  2.4.0, not running, or agent control off. Retrying cannot fix it — the
+  message says which one and what to do; relay that to the user and stop.
 - Logins, captchas, 2FA, consequential choices are the user's:
   `phibrowser handoff "Sign in, then hand back"` (`--wait` blocks inline).
 - `phibrowser challenge` detects Cloudflare walls — hand off, never solve.
