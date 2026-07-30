@@ -1,18 +1,48 @@
 {
-  "name": "phibrowser-cli",
+  "name": "@phibrowser/cli",
   "version": "0.1.0",
   "description": "Command-line browser automation for Phi Browser — drives agent Spaces over CDP, playwright-cli style",
+  "keywords": [
+    "phibrowser",
+    "browser-automation",
+    "cli",
+    "cdp",
+    "chrome-devtools-protocol",
+    "agent",
+    "playwright"
+  ],
+  "homepage": "https://github.com/phibrowser/phibrowser-cli#readme",
+  "bugs": "https://github.com/phibrowser/phibrowser-cli/issues",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/phibrowser/phibrowser-cli.git"
+  },
+  "license": "Apache-2.0",
+  "author": "Phinomenon Inc.",
   "type": "module",
   "bin": {
     "phibrowser": "bin/phibrowser.mjs"
   },
+  "files": [
+    "bin/",
+    "src/",
+    "skill/",
+    "LICENSE",
+    "README.md"
+  ],
   "engines": {
     "node": ">=22"
   },
+  "os": [
+    "darwin"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "smoke": "node bin/phibrowser.mjs --version",
-    "test": "node test/cli.test.mjs"
-  },
-  "license": "UNLICENSED",
-  "private": true
+    "test": "node test/cli.test.mjs",
+    "prepublishOnly": "node scripts/preflight.mjs",
+    "formula": "node scripts/sync-formula.mjs"
+  }
 }

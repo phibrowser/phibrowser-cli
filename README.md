@@ -41,11 +41,20 @@ window) — with persistent being a property of an agent Space, not a fourth
 kind.
 
 The CLI is a thin command surface over the phi-browser skill's helper engine —
-it resolves and imports `helpers.mjs` at runtime rather than duplicating it:
+it resolves and imports `helpers.mjs` at runtime rather than vendoring it, so
+the engine is always the one that shipped with the Phi Browser build it talks
+to. Resolution order:
 
 1. `$PHIBROWSER_CLI_LIB` (explicit `scripts/lib` dir)
-2. sibling checkout `../phibrowser-mac/tools/phi-browser-skill/scripts/lib`
-3. installed skills: `~/.claude`, `~/.codex`, `~/.pi/agent`
+2. `$PHIBROWSER_APP` (explicit Phi Browser bundle)
+3. sibling checkout `../phibrowser-mac/tools/phi-browser-skill/scripts/lib`
+4. installed app: `Phi Canary.app` then `Phi.app`, in `/Applications` and
+   `~/Applications` — the bundle carries the whole skill under
+   `Contents/Resources/phi-browser-skill`. This is what makes `npm i -g` and
+   `brew install` work with nothing else set up. Canary is probed first to
+   match the order the engine itself probes for the app socket.
+5. installed skills: `~/.claude`, `~/.codex`, `~/.cursor`, `~/.openclaw`,
+   `~/.hermes`, `~/.pi/agent`
 
 State that persists between invocations lives in the browser or on disk, not
 in the CLI: the Space keeps its tabs (ephemeral TTL ~30 min between rounds —
@@ -54,13 +63,34 @@ stable for the element's lifetime, and `observe` diff baselines persist on
 disk, so `snapshot --diff` and the after-action change summaries work across
 invocations.
 
+## Install
+
+```bash
+npm install -g @phibrowser/cli          # npm
+brew install phibrowser/tap/phibrowser  # Homebrew (same tarball, adds node)
+```
+
+Both install the `phibrowser` command. There is nothing else to set up: the
+CLI finds the automation engine inside the installed Phi Browser app (see
+[resolution order](#contexts--where-a-command-runs) above).
+
+From a checkout, for development:
+
+```bash
+cd phibrowser-cli && npm link      # or: alias phibrowser="node $PWD/bin/phibrowser.mjs"
+```
+
+Releasing (publish + Homebrew tap sync) is documented in
+[RELEASING.md](RELEASING.md).
+
 ## Requirements
 
-- Node ≥ 22
+- macOS (the package is `os: darwin`) and Node ≥ 22
+- Phi Browser installed — the CLI is a client, not a browser, and loads the
+  engine that ships in the app bundle
 - Phi Browser running, with Settings ▸ Developer ▸ Remote debugging ▸ "Allow
   agents to control Phi (CDP)" enabled (the raw `--remote-debugging-port` is
   not enough — agent Spaces need the authenticated app socket)
-- The phi-browser skill present somewhere the resolver can find it (see above)
 - A Phi build whose `AgentPeerIdentity.ownBrandNames` includes
   `phibrowser-cli`. The CLI brands itself via `process.title` so the app
   treats it as skill plumbing — acting for whoever drives it (the coding
@@ -68,12 +98,6 @@ invocations.
   identity. On older builds the app names the CLI by its script path and
   isolates it under a fresh principal that cannot see the driving agent's
   Spaces (rounds fail with "lost its agent session").
-
-## Install
-
-```bash
-cd phibrowser-cli && npm link      # or: alias phibrowser="node $PWD/bin/phibrowser.mjs"
-```
 
 ## Sessions
 
