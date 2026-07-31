@@ -27,7 +27,6 @@
   "files": [
     "bin/",
     "src/",
-    "skill/",
     "LICENSE",
     "README.md"
   ],

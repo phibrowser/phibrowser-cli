@@ -3,8 +3,8 @@
 //
 // Runs as `prepublishOnly`: the last gate before bytes leave the machine.
 // Checks what a broken publish would otherwise teach us in production —
-// an unrunnable bin, a tarball carrying junk (or missing the skill file
-// `install --skills` writes), and a Homebrew formula left on the old version.
+// an unrunnable bin, a tarball carrying junk or missing a file the CLI reads
+// at runtime, and a Homebrew formula left on the old version.
 
 import { execFileSync } from 'node:child_process'
 import { accessSync, constants, readFileSync } from 'node:fs'
@@ -45,7 +45,7 @@ const listed = JSON.parse(execFileSync('npm', ['pack', '--dry-run', '--json'], {
 }))[0].files.map((f) => f.path)
 
 for (const required of ['bin/phi-cli.mjs', 'src/cli.mjs', 'src/render.mjs',
-                        'src/resolve-lib.mjs', 'skill/SKILL.md', 'LICENSE', 'README.md']) {
+                        'src/resolve-lib.mjs', 'LICENSE', 'README.md']) {
   if (!listed.includes(required)) fail(`tarball is missing ${required}`)
 }
 for (const path of listed) {

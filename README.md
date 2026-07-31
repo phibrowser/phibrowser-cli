@@ -159,7 +159,7 @@ per-command flags.
 
 | Group | Commands |
 |---|---|
-| Session | `open` `close` `close-all` `sessions` `profiles` `status` `ping` `narrate` `messages` `handoff` `takeover` `watch` `run-code` `script` `install --skills/--browser` |
+| Session | `open` `close` `close-all` `sessions` `profiles` `status` `ping` `narrate` `messages` `handoff` `takeover` `watch` `run-code` `script` `install skill\|browser` |
 | Navigation | `goto` `reload` `back` `forward` `tabs` `tab-new` `tab-select` `tab-close` |
 | Observe | `snapshot` (`--filename`) `find` `screenshot` `pdf` `archive` `eval` (`--on`) `console` `requests` `info` `challenge` `highlight` |
 | Act | `click` `hover` `fill` `type` `press` `check` `uncheck` `select` `drag` `scroll` `upload` `dialog` `accept-cookies` `viewport` `keydown` `keyup` `mousemove` `mousedown` `mouseup` `mousewheel` |
@@ -235,9 +235,42 @@ raw runner — including binding a *different* context yourself, or none at all.
 Because the CLI resolves the engine the same way it does for every other
 command, `script` always runs the build it would actually drive: no hunting for
 the skill directory, and no chance of pairing one build's engine with another's
-browser. `install --skills` writes `skill/SKILL.md` into the agent skill dirs
-that exist (`~/.claude`, `~/.codex`, `~/.pi/agent`); `install --browser`
-installs Phi Browser itself (see [Exit codes](#exit-codes)).
+browser.
+
+### Installing the skill
+
+```bash
+phi install skill                # the phi-browser skill, for every agent present
+phi install skill claude codex   # only these agents
+phi install browser              # Phi Browser itself
+```
+
+`install skill` **symlinks** the phi-browser skill — the full engine, with its
+`references/`, `scripts/` and helper library — into each agent's
+`skills/phi-browser`. A link rather than a copy is the point: the skill then
+tracks the Phi Browser build it came from, so updating the app moves every
+agent forward at once. It is what Phi's **Settings ▸ General ▸ Developer ▸
+"Install the phi-browser skill"** buttons do, without leaving the terminal.
+
+Agents: `claude` (`~/.claude/skills`), `codex`, `cursor`, `openclaw`, `hermes`,
+`pi` (`~/.pi/agent/skills`). Name them explicitly, or name none and every agent
+already present on the machine gets the link — so this never litters `~` with
+directories for tools you don't use. **Pi** also gets a companion extension at
+`~/.pi/agent/extensions/phi-browser`, which is what lets an Agent Transcript
+command wake a live Pi session; run `/reload` in an open Pi session afterwards.
+
+Re-running is idempotent (`current`), a link pointing elsewhere is repointed
+(`relinked`), and a **real directory** in the way is left untouched
+(`blocked`, exit 1) — those are your files, not a link this command made. Pass
+`--force` to replace it, `--dry-run` to see the plan first. The link source is
+always printed, because it is the same engine this CLI would drive: a sibling
+checkout wins over an installed app here exactly as it does everywhere else.
+
+`install browser` installs Phi Browser itself (see [Exit codes](#exit-codes)).
+
+The CLI ships no skill of its own: `phi help` is the command reference, and the
+phi-browser skill above is what an agent loads. Agents that used to get a
+`skills/phi-cli` sheet can have that directory deleted.
 
 ### Credentials — the user's password manager
 

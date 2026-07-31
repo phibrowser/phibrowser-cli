@@ -17,7 +17,7 @@
 // do not fail the suite.
 
 import { spawn } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -432,7 +432,56 @@ async function main() {
     assert(empty.code === 2, `empty stdin came back as ${empty.code}`)
     assertHas(clean(empty), 'empty script on stdin', 'runner empty-stdin message')
   })
-  await SMOKE('install --skills', async () => assertHas(clean(assertOk(await run(['install', '--skills']))), 'installed', 'install'))
+  // `install skill` writes into agent HOME directories, so every assertion
+  // here runs against a throwaway one — the suite must never repoint the
+  // real ~/.claude/skills/phi-browser link out from under the user.
+  await T('install skill (symlinks into a throwaway HOME)', async () => {
+    const home = join(TMP, 'fakehome')
+    mkdirSync(join(home, '.claude'), { recursive: true })
+    mkdirSync(join(home, '.pi', 'agent'), { recursive: true })
+    const r = assertOk(await run(['install', 'skill'], { env: { HOME: home } }), 'install skill')
+    assertHas(clean(r), 'Claude Code', 'agent label')
+    const link = join(home, '.claude', 'skills', 'phi-browser')
+    assert(lstatSync(link).isSymbolicLink(), 'not a symlink')
+    assert(existsSync(join(link, 'SKILL.md')), 'skill not readable through the link')
+    // Pi's companion extension is what wakes a live Pi session.
+    assert(lstatSync(join(home, '.pi', 'agent', 'extensions', 'phi-browser')).isSymbolicLink(),
+      'pi extension not linked')
+    // Untouched agents must not be created.
+    assert(!existsSync(join(home, '.codex')), 'created a dir for an absent agent')
+  })
+  await T('install skill is idempotent', async () => {
+    const home = join(TMP, 'fakehome')
+    const r = assertOk(await run(['install', 'skill', 'claude'], { env: { HOME: home } }))
+    assertHas(clean(r), 'current', 'second run should report current')
+  })
+  await T('install skill refuses a real directory, keeps the files', async () => {
+    const home = join(TMP, 'fakehome2')
+    const dest = join(home, '.claude', 'skills', 'phi-browser')
+    mkdirSync(dest, { recursive: true })
+    writeFileSync(join(dest, 'MINE.md'), 'not a link')
+    const r = await run(['install', 'skill', 'claude'], { env: { HOME: home } })
+    assert(r.code === 1, `expected exit 1 for a blocked destination, got ${r.code}`)
+    assertHas(clean(r), 'blocked', 'blocked status')
+    assert(readFileSync(join(dest, 'MINE.md'), 'utf8') === 'not a link', 'clobbered real files')
+    // --force is the explicit override.
+    assertOk(await run(['install', 'skill', 'claude', '--force'], { env: { HOME: home } }), 'forced')
+    assert(lstatSync(dest).isSymbolicLink(), '--force did not replace with a link')
+  })
+  await T('install skill --dry-run changes nothing', async () => {
+    const home = join(TMP, 'fakehome3')
+    mkdirSync(home, { recursive: true })
+    assertOk(await run(['install', 'skill', 'hermes', '--dry-run'], { env: { HOME: home } }))
+    assert(!existsSync(join(home, '.hermes')), 'dry run created a directory')
+  })
+  await T('install rejects an unknown target and an unknown agent', async () => {
+    const bad = await run(['install', 'nonsense'])
+    assert(bad.code === 2, `expected usage exit 2, got ${bad.code}`)
+    assertHas(clean(bad), 'unknown install target', 'target refusal')
+    const agent = await run(['install', 'skill', 'nosuchagent'])
+    assert(agent.code === 2, `expected usage exit 2, got ${agent.code}`)
+    assertHas(clean(agent), 'unknown agent', 'agent refusal')
+  })
 
   SKIP('handoff', 'interactive — hands control to the user')
   SKIP('takeover', 'interactive — only valid after a handoff')

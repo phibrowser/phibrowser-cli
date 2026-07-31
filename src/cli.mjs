@@ -15,7 +15,10 @@
 // after-action change summaries also work across invocations.
 
 import { execFileSync, spawn } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import {
+  existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync,
+  symlinkSync, writeFileSync,
+} from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join, resolve as resolvePath } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -1409,50 +1412,137 @@ cmd({
   },
 })
 
+// Where each agent keeps its skills, in the order Phi's own Settings ▸
+// Developer installer lists them. Pi also wants a companion extension, which
+// is what lets an Agent Transcript command wake a live Pi session.
+const SKILL_AGENTS = [
+  { id: 'claude', label: 'Claude Code', skills: ['.claude', 'skills'] },
+  { id: 'codex', label: 'Codex', skills: ['.codex', 'skills'] },
+  { id: 'cursor', label: 'Cursor', skills: ['.cursor', 'skills'] },
+  { id: 'openclaw', label: 'OpenClaw', skills: ['.openclaw', 'skills'] },
+  { id: 'hermes', label: 'Hermes', skills: ['.hermes', 'skills'] },
+  { id: 'pi', label: 'Pi', skills: ['.pi', 'agent', 'skills'],
+    extensions: ['.pi', 'agent', 'extensions'] },
+]
+
+const realOf = (p) => { try { return realpathSync(p) } catch { return null } }
+const tildify = (p) => p.startsWith(homedir()) ? '~' + p.slice(homedir().length) : p
+
+/**
+ * `ln -sfn`: point `dest` at `src`, replacing a link that is already there
+ * without ever following it. A REAL directory in the way is left alone unless
+ * forced — that is someone's files, not a link this command made.
+ */
+function linkSkill(src, dest, { force, dryRun }) {
+  let existing = null
+  try { existing = lstatSync(dest) } catch {}
+  if (existing?.isSymbolicLink() && realOf(dest) && realOf(dest) === realOf(src)) {
+    return 'current'
+  }
+  if (existing && !existing.isSymbolicLink() && !force) return 'blocked'
+  if (dryRun) return existing ? 'would replace' : 'would link'
+  mkdirSync(dirname(dest), { recursive: true })
+  if (existing) rmSync(dest, { recursive: true, force: true })
+  symlinkSync(src, dest)
+  return existing ? 'relinked' : 'linked'
+}
+
+/**
+ * Links the phi-browser skill — the engine itself, not this CLI's thin
+ * command sheet — into each agent's skills directory. A symlink rather than a
+ * copy is the whole point: the skill then tracks the Phi Browser build it came
+ * from, so updating the app moves every agent forward at once.
+ */
+function installPhiBrowserSkill(ctx) {
+  // Resolved through realpath so agents link at the app bundle itself rather
+  // than at another agent's link to it — one hop, and no chain to go stale.
+  const skillRoot = realOf(join(resolveLibDir(), '..', '..'))
+  if (!skillRoot || !existsSync(join(skillRoot, 'SKILL.md'))) {
+    throw new Error('no phi-browser skill found next to the engine' +
+      (skillRoot ? ` (looked in ${skillRoot})` : '') +
+      ' — update Phi Browser, or point PHIBROWSER_CLI_LIB at a scripts/lib dir.')
+  }
+  const named = ctx.args.slice(1).map((a) => a.toLowerCase())
+  for (const n of named) {
+    if (!SKILL_AGENTS.some((a) => a.id === n)) {
+      throw new UsageError(`unknown agent ${JSON.stringify(n)} — ` +
+        `expected one of: ${SKILL_AGENTS.map((a) => a.id).join(', ')}`)
+    }
+  }
+  // Naming an agent is the intent, so it is installed whether or not it is
+  // set up yet. With none named, install only where the agent already lives —
+  // otherwise this litters ~ with directories for tools you don't use.
+  const targets = SKILL_AGENTS.filter((a) => named.length
+    ? named.includes(a.id)
+    : existsSync(join(homedir(), ...a.skills.slice(0, -1))))
+  if (!targets.length) {
+    ctx.print('(no agent directories found — name one explicitly, e.g. ' +
+      `\`${PROG} install skill claude\`)`)
+    return
+  }
+  const opts = { force: ctx.flags.force, dryRun: ctx.flags['dry-run'] }
+  const lines = []
+  let blocked = 0
+  for (const agent of targets) {
+    const dest = join(homedir(), ...agent.skills, 'phi-browser')
+    const state = linkSkill(skillRoot, dest, opts)
+    if (state === 'blocked') blocked++
+    lines.push(`  ${agent.label.padEnd(12)} ${state.padEnd(13)} ${tildify(dest)}`)
+    if (!agent.extensions) continue
+    // Pi's companion extension: without it an Agent Transcript command cannot
+    // wake a live Pi session, it only queues until the next round.
+    const extSrc = join(skillRoot, 'extensions', 'pi')
+    if (!existsSync(extSrc)) continue
+    const extDest = join(homedir(), ...agent.extensions, 'phi-browser')
+    const extState = linkSkill(extSrc, extDest, opts)
+    if (extState === 'blocked') blocked++
+    lines.push(`  ${''.padEnd(12)} ${extState.padEnd(13)} ${tildify(extDest)}`)
+  }
+  ctx.print(`${ctx.flags['dry-run'] ? 'dry run' : 'ok'}: phi-browser skill -> ${skillRoot}\n` +
+    lines.join('\n'))
+  if (targets.some((a) => a.id === 'pi') && !ctx.flags['dry-run']) {
+    ctx.print('\nPi: run `/reload` in an already-open session to pick up the extension.')
+  }
+  if (blocked) {
+    console.error(`${PROG} install: ${blocked} destination(s) hold a real directory, ` +
+      'not a link — that is your files, so nothing was touched. Inspect them, ' +
+      'then re-run with --force to replace.')
+    // Asked to install, did not install: a script must not read this as done.
+    return 1
+  }
+}
+
 cmd({
-  name: 'install', group: 'Session', sig: 'install --skills | --browser',
-  desc: 'Install the phi-cli skill file, or Phi Browser itself',
+  name: 'install', group: 'Session', sig: 'install skill [agent...] | browser',
+  desc: 'Install the phi-browser skill for your agents, or Phi Browser itself',
   flags: {
-    skills: { type: 'bool', desc: 'install SKILL.md into agent skill directories' },
     browser: { type: 'bool', desc: 'download and install Phi Browser from the official update feed' },
-    'dry-run': { type: 'bool', desc: 'with --browser: report what would be installed, download nothing' },
+    force: { type: 'bool', desc: 'with `skill`: replace a real directory sitting where the link goes' },
+    'dry-run': { type: 'bool', desc: 'report what would happen, change nothing' },
   },
   context: 'none',
   async run(ctx) {
+    if (ctx.args[0] === 'skill') return installPhiBrowserSkill(ctx)
+    if (ctx.args[0] && ctx.args[0] !== 'browser') {
+      throw new UsageError(`unknown install target ${JSON.stringify(ctx.args[0])} ` +
+        '— expected `skill` or `browser`')
+    }
+    if (!ctx.args[0] && !ctx.flags.browser) {
+      throw new UsageError('need `skill` or `browser`')
+    }
     // The same installer the missing-browser prompt runs, reachable without
     // a TTY so scripts and agents can provision deliberately.
-    if (ctx.flags.browser) {
-      const release = await latestRelease()
-      if (!releaseIsUsable(release)) {
-        throw new Error(`the current stable release is ${release.version}, below the ` +
-          `${MIN_APP_VERSION} agent control needs — nothing worth installing yet`)
-      }
-      if (ctx.flags['dry-run']) {
-        ctx.print(`would install Phi Browser ${release.version}\n  ${release.url}`)
-        return
-      }
-      const app = await installBrowser({ release, log: (line) => console.error(line) })
-      ctx.print(`ok: ${app}`)
+    const release = await latestRelease()
+    if (!releaseIsUsable(release)) {
+      throw new Error(`the current stable release is ${release.version}, below the ` +
+        `${MIN_APP_VERSION} agent control needs — nothing worth installing yet`)
+    }
+    if (ctx.flags['dry-run']) {
+      ctx.print(`would install Phi Browser ${release.version}\n  ${release.url}`)
       return
     }
-    if (!ctx.flags.skills) throw new UsageError('need --skills or --browser')
-    const src = join(pkgRoot, 'skill', 'SKILL.md')
-    if (!existsSync(src)) throw new Error(`skill file missing: ${src}`)
-    const content = readFileSync(src, 'utf8')
-    const roots = [
-      { dir: join(homedir(), '.claude', 'skills'), always: true },
-      { dir: join(homedir(), '.codex', 'skills'), always: false },
-      { dir: join(homedir(), '.pi', 'agent', 'skills'), always: false },
-    ]
-    const installed = []
-    for (const { dir, always } of roots) {
-      if (!always && !existsSync(dir)) continue
-      const dest = join(dir, 'phi-cli')
-      mkdirSync(dest, { recursive: true })
-      writeFileSync(join(dest, 'SKILL.md'), content)
-      installed.push(join(dest, 'SKILL.md'))
-    }
-    ctx.print('ok: installed\n' + installed.map((p) => `  ${p}`).join('\n'))
+    const app = await installBrowser({ release, log: (line) => console.error(line) })
+    ctx.print(`ok: ${app}`)
   },
 })
 
