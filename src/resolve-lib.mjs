@@ -39,7 +39,10 @@ const AGENT_SKILL_DIRS = [
 const skillLib = (skillRoot) => join(skillRoot, 'scripts', 'lib')
 const appLib = (app) => skillLib(join(app, 'Contents', 'Resources', 'phi-browser-skill'))
 
-export const DOWNLOAD_URL = 'https://phibrowser.com'
+// Direct latest-DMG link rather than the marketing page: every path that
+// reaches for this has already decided the user needs the installer, so the
+// fewest clicks between here and a mounted disk image is the right answer.
+export const DOWNLOAD_URL = 'https://phibrowser.com/download/latest_dmg'
 
 // The release that introduced the agent-Space surface the CLI drives. Older
 // builds have no engine to load and no Settings toggle to turn on, so they

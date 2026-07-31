@@ -434,7 +434,7 @@ web page:
 
 ```
 phibrowser: Phi Browser is not installed. The CLI drives the app — it needs
-Phi Browser 2.4.0+ (free, macOS): https://phibrowser.com
+Phi Browser 2.4.0+ (free, macOS): https://phibrowser.com/download/latest_dmg
 
 Install Phi Browser 2.4.0 now? [Y/n] y
 Downloading Phi Browser 2.4.0 (329 MB)…
@@ -449,8 +449,8 @@ debugging ▸ "Allow agents to control Phi (CDP)", then run this again.
 Same thing without a terminal, for scripts and provisioning:
 
 ```bash
-phi install --browser              # download, verify, install
-phi install --browser --dry-run    # report the release, download nothing
+phi install browser              # download, verify, install
+phi install browser --dry-run    # report the release, download nothing
 ```
 
 It comes from Phi's own update feed — the Sparkle appcast the app itself

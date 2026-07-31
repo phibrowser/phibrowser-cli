@@ -2410,7 +2410,10 @@ async function offerInstall(d) {
   if (!releaseIsUsable(release)) {
     console.error(`\nThe current stable release is ${release.version}, still below the ` +
       `${MIN_APP_VERSION} that agent control needs — installing it would not help yet.`)
-    if (await confirm(`Open ${DOWNLOAD_URL} to check the channels? [Y/n] `)) openMac([DOWNLOAD_URL])
+    // Deliberately no download offer here: the link serves this very release,
+    // so pointing at it would hand over the build we just refused.
+    console.error(`Watch for ${MIN_APP_VERSION} on the stable channel, or ask for a ` +
+      'Canary build — it is the prerelease channel and is always ahead.')
     return 5
   }
 
