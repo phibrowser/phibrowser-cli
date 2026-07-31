@@ -25,9 +25,9 @@ import {
   MIN_APP_VERSION, resolveLibDir, SETTINGS_DEEPLINK,
 } from './resolve-lib.mjs'
 import {
-  renderBookmarks, renderDownloads, renderJson, renderObserve,
-  renderPinnedTabs, renderProfiles, renderSpaces, renderSpaceTabs,
-  renderSplitViews, renderTabGroups, renderTabs, renderUrlRules,
+  renderBookmarks, renderCredential, renderCredentialStatus, renderDownloads,
+  renderJson, renderObserve, renderPinnedTabs, renderProfiles, renderSpaces,
+  renderSpaceTabs, renderSplitViews, renderTabGroups, renderTabs, renderUrlRules,
 } from './render.mjs'
 
 const pkgRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -1166,7 +1166,195 @@ function defineStorageCommands(kind) {
 defineStorageCommands('local')
 defineStorageCommands('session')
 
+// ---------------------------------------------------------------------------
+// Credentials — the user's password manager
+//
+// Three ways to use a vault item, ordered by how far the secret travels:
+// cred-fill (app -> page; the CLI never holds it), cred-run (app -> this
+// process -> a child's environment), cred-get (app -> the caller's context).
+// Prefer them in that order — the doc's rule, and the reason cred-get carries
+// friction the other two don't.
+//
+// Every secret-touching call pops an approve/deny prompt in Phi naming the
+// caller, the site, and the KIND of exposure; a remembered grant covers only
+// the kind it was approved for, so a denial on cred-get can follow an
+// approved cred-fill. TOTP is deliberately unreachable — a 2FA step is the
+// user's, via `handoff`. Same Agent-permissions gate as browser management
+// (exit 4 when off); a vault that won't serve exits 6.
+
+const CRED_QUERY_FLAGS = {
+  username: { type: 'str', desc: 'pick one account when a site has several' },
+  id: { type: 'str', desc: 'credentialId — names the vault item directly' },
+  search: { type: 'str', desc: 'vault item name (reaches notes/cards/identities/SSH keys)' },
+}
+
+// A repeatable list flag also accepts one comma-separated value. Field and
+// environment-variable names never contain a comma, so splitting is safe.
+const splitList = (values) =>
+  (values ?? []).flatMap((v) => v.split(',')).map((s) => s.trim()).filter(Boolean)
+
+// The vault query every credential command builds: a bare domain positional,
+// or --id/--search for items that have no domain (notes, cards, identities,
+// SSH keys — domain queries reach logins only). --username narrows a site
+// with several accounts; the lib ignores it on the other query kinds, so
+// pairing them is refused here rather than silently doing nothing.
+function credQuery(ctx, domain) {
+  const q = ctx.flags.id ? { id: ctx.flags.id }
+    : ctx.flags.search ? { search: ctx.flags.search }
+    : domain ? { domain }
+    : null
+  if (!q) throw new UsageError('give a domain, or --id / --search')
+  if (ctx.flags.username) {
+    if (!q.domain) throw new UsageError('--username narrows a domain query, not --id/--search')
+    q.username = ctx.flags.username
+  }
+  return q
+}
+
+cmd({
+  name: 'cred-status', group: 'Credentials', sig: 'cred-status',
+  desc: 'Password-manager readiness (ready/locked/logged_out/not_installed)',
+  context: 'app',
+  async run(ctx) {
+    const r = await ctx.h.credentialStatus()
+    ctx.print(ctx.flags.json ? renderJson(r) : renderCredentialStatus(r))
+  },
+})
+
+cmd({
+  name: 'cred-fill', group: 'Credentials', sig: 'cred-fill <target> [domain]',
+  desc: 'Fill a login field from the vault — Phi fills it, the value never reaches you',
+  flags: {
+    field: { type: 'str', desc: "'password' (default) or 'username'" },
+    'allow-cross-origin': { type: 'bool', desc: 'allow a fill on another site (confirmed SSO portals only)' },
+    ...CRED_QUERY_FLAGS,
+  },
+  context: 'page',
+  async run(ctx) {
+    const target = requireArg(ctx.args, 0, 'target')
+    // "x,y" is coordinates everywhere else here (click/hover), so someone will
+    // try it. Say so in those terms — left alone it reaches the lib as a
+    // selector and comes back as a puzzling "target not found: 10,10".
+    if (parseTarget(target).coords) {
+      throw new UsageError('cred-fill needs an element target (@ref, loc=, CSS) — ' +
+        'a fill lands in a named field, not at "x,y" coordinates')
+    }
+    const field = ctx.flags.field ?? 'password'
+    if (field !== 'password' && field !== 'username') {
+      throw new UsageError(`--field must be 'password' or 'username', got ${JSON.stringify(field)}`)
+    }
+    const r = await ctx.h.fillCredential(normalizeTarget(target), credQuery(ctx, ctx.args[1]), {
+      field,
+      ...(ctx.flags['allow-cross-origin'] ? { allowCrossOrigin: true } : {}),
+    })
+    // No value to echo, by construction: the fill returns {filled, field}.
+    await finishAction(ctx, `filled ${field} into ${target} from the vault`, r)
+  },
+})
+
+cmd({
+  name: 'cred-run', group: 'Credentials', sig: 'cred-run [domain] --env VAR=field -- <cmd...>',
+  desc: 'Run a command with vault fields in its environment (secrets skip your context)',
+  flags: {
+    env: { type: 'list', desc: 'VAR=field mapping, repeatable (e.g. PGPASSWORD=password)' },
+    'env-all': { type: 'bool', desc: 'inject every present field as PHI_CRED_<FIELD>' },
+    cwd: { type: 'str', desc: 'working directory for the command' },
+    timeout: { type: 'num', desc: 'seconds before the command is killed (default 120)' },
+    ...CRED_QUERY_FLAGS,
+  },
+  // Bind the session Space only when it already exists: a credential run
+  // needs no browser window, but when one is open the transcript should show
+  // that the agent used a vault item. Never worth minting a Space for.
+  context: 'agent', create: false,
+  async run(ctx) {
+    // With --id/--search carrying the query, every positional belongs to the
+    // command; otherwise the first is the domain. Nothing in the token itself
+    // distinguishes a bare domain from a bare command name.
+    const byFlag = Boolean(ctx.flags.id || ctx.flags.search)
+    const query = credQuery(ctx, byFlag ? undefined : ctx.args[0])
+    const command = ctx.args.slice(byFlag ? 0 : 1)
+    if (!command.length) {
+      throw new UsageError('give the command after `--` (e.g. `-- psql -c "select 1"`)')
+    }
+    const env = {}
+    for (const pair of splitList(ctx.flags.env)) {
+      const eq = pair.indexOf('=')
+      if (eq <= 0) throw new UsageError(`--env expects VAR=field, got ${JSON.stringify(pair)}`)
+      env[pair.slice(0, eq)] = pair.slice(eq + 1)
+    }
+    const r = await ctx.h.runWithCredential(query, command, {
+      env,
+      ...(ctx.flags['env-all'] ? { envAll: true } : {}),
+      ...(ctx.flags.cwd ? { cwd: ctx.flags.cwd } : {}),
+      ...(ctx.flags.timeout ? { timeoutSeconds: ctx.flags.timeout } : {}),
+    })
+    // The lib already scrubbed the secret values out of both streams.
+    if (ctx.flags.json) ctx.print(renderJson(r))
+    else {
+      if (r.stdout) ctx.print(r.stdout.replace(/\n+$/, ''))
+      if (r.stderr) ctx.print(r.stderr.replace(/\n+$/, ''))
+      if (!r.timedOut && r.code === 0) ctx.print('ok: exit 0')
+    }
+    // Output first, then the verdict: a failing child is this command
+    // failing (exit 1), not a credential problem — the secret was served.
+    if (r.timedOut) throw new Error(`command timed out after ${ctx.flags.timeout ?? 120}s`)
+    if (r.code !== 0) throw new Error(`command exited ${r.code}`)
+  },
+})
+
+cmd({
+  name: 'cred-get', group: 'Credentials', sig: 'cred-get [domain] --purpose <why>',
+  desc: 'REVEAL a vault item to this process — last resort; prefer cred-fill/cred-run',
+  flags: {
+    purpose: { type: 'str', desc: 'why you need the value — shown in the approval prompt' },
+    fields: { type: 'list', desc: 'limit returned fields, repeatable (e.g. username,password)' },
+    ...CRED_QUERY_FLAGS,
+  },
+  context: 'app',
+  async run(ctx) {
+    // The lib composes the approval prompt's purpose line for fills and runs
+    // from what they are about to do. A reveal has nothing to compose it
+    // from, so the CLI insists the caller supplies one: the most exposing
+    // call should not be the one the user approves with the least to read.
+    if (!ctx.flags.purpose) {
+      throw new UsageError('--purpose is required — the user approves this reveal by reading it')
+    }
+    // An empty list is "no filter", not "no fields" — passing [] through would
+    // ask the app for nothing and spend an approval on an empty answer.
+    const fields = splitList(ctx.flags.fields)
+    const cred = await ctx.h.getCredential(credQuery(ctx, ctx.args[0]), {
+      purpose: ctx.flags.purpose,
+      ...(fields.length ? { fields } : {}),
+    })
+    ctx.print(ctx.flags.json ? renderJson(cred) : renderCredential(cred))
+  },
+})
+
 // --- power tools ---
+
+cmd({
+  name: 'script', group: 'Session', sig: 'script [args...] (script on stdin)',
+  desc: 'Raw engine runner — exactly `node <skill>/scripts/runner.mjs`',
+  // 'none': the runner loads the helpers itself, so loading them here too
+  // would connect a second, pointless CDP client per invocation. Nothing is
+  // prepended and nothing is bound — that is the whole point of this command
+  // versus run-code, which enters the session's agent Space first.
+  context: 'none',
+  async run(ctx) {
+    const runner = join(resolveLibDir(), '..', 'runner.mjs')
+    // Full stdio inheritance, so `phi script <<<'…'`, a heredoc, `< file`,
+    // and a pipe all reach the runner byte-for-byte as they would if it were
+    // invoked directly — and its exit code comes back untranslated.
+    return await new Promise((res) => {
+      const child = spawn(process.execPath, [runner, ...ctx.args], { stdio: 'inherit' })
+      child.on('exit', (code, signal) => res(signal ? 128 + 15 : code ?? 1))
+      child.on('error', (err) => {
+        console.error(`${PROG} script: ${err.message}`)
+        res(1)
+      })
+    })
+  },
+})
 
 cmd({
   name: 'run-code', group: 'Session', sig: 'run-code [--file <f>] (script on stdin)',
@@ -1913,6 +2101,12 @@ export function parseArgv(argv) {
       value = argv[++i]
       if (value === undefined) throw new UsageError(`flag --${spec.key} needs a value`)
     }
+    // 'list' accumulates instead of overwriting, so --env A=x --env B=y both
+    // survive; every other type keeps last-wins.
+    if (spec.type === 'list') {
+      flags[spec.key] = [...(flags[spec.key] ?? []), value]
+      continue
+    }
     flags[spec.key] = spec.type === 'num' ? Number(value) : value
     if (spec.type === 'num' && Number.isNaN(flags[spec.key])) {
       throw new UsageError(`flag --${spec.key} needs a number`)
@@ -1929,8 +2123,12 @@ function version() {
 }
 
 function flagLines(pool) {
-  return Object.entries(pool).map(([k, v]) =>
-    `  ${(v.short ? `-${v.short}, ` : '    ') + `--${k}`}${v.type !== 'bool' ? ' <v>' : ''}`.padEnd(26) + (v.desc || ''))
+  return Object.entries(pool).map(([k, v]) => {
+    const label = `  ${(v.short ? `-${v.short}, ` : '    ') + `--${k}`}${v.type !== 'bool' ? ' <v>' : ''}`
+    // Pad to the same column as before, but always keep two spaces: a flag
+    // name long enough to fill the column would otherwise butt into its text.
+    return `${label.padEnd(24)}  ${v.desc || ''}`
+  })
 }
 
 function helpText(topic) {
@@ -2245,12 +2443,19 @@ export async function main(argv) {
   if (cmdDef.context === 'none') {
     const ctx = { args, flags, session, print: (v) => console.log(v) }
     try {
-      await cmdDef.run(ctx)
-      return 0
+      // A number means "this exact exit code" — `script` propagates the
+      // runner's verbatim, so a heredoc's own failure code survives the trip.
+      const code = await cmdDef.run(ctx)
+      return typeof code === 'number' ? code : 0
     } catch (err) {
       if (err instanceof UsageError) {
         console.error(`${PROG} ${command}: ${err.message}`)
         return 2
+      }
+      // `script` needs the engine on disk to have something to run; that
+      // failure gets the same install/update ladder as every other path.
+      if (err?.code === 'phi_not_installed' || err?.code === 'phi_engine_missing') {
+        return await reportNoBrowser(flags, err)
       }
       console.error(`${PROG} ${command}: ${err?.message || err}`)
       return 1
@@ -2313,6 +2518,22 @@ export async function main(argv) {
                     '"Allow agents to operate your Spaces" to manage the user\'s ' +
                     'Spaces/bookmarks/etc. Agent-Space commands are unaffected.')
       return 4
+    }
+    // The vault refused to serve, and repeating the same call cannot change
+    // that — only the user can. Kept apart from a plain failure (1) so an
+    // agent stops instead of looping on the approval prompt. Retryable
+    // credential errors (ambiguous, origin_mismatch) stay at 1: the caller
+    // fixes those itself by narrowing the query or confirming the page.
+    if (/credential/i.test(msg) &&
+        /(?:^|[\s:])(user_denied|not_ready|locked|logged_out|not_installed|disabled|unavailable)\b/.test(msg)) {
+      console.error(/user_denied/.test(msg)
+        ? 'The user declined this credential request — their answer to the ' +
+          'exposure, not to the task. Do not retry it: ask them, or take a ' +
+          'path that needs no secret. Note that grants are per exposure kind, ' +
+          `so a denied \`${PROG} cred-get\` can follow an approved \`${PROG} cred-fill\`.`
+        : `Password manager not ready — run \`${PROG} cred-status\`, then ask ` +
+          'the user to unlock or sign in (Phi ▸ Settings ▸ General).')
+      return 6
     }
     return 1
   }

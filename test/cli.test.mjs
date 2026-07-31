@@ -331,6 +331,77 @@ async function main() {
   await SMOKE('state-save', async () => assertOk(await run(['-s', S, 'state-save', 'phibstate'])))
   await SMOKE('state-load', async () => assertOk(await run(['-s', S, 'state-load', 'phibstate'])))
 
+  // ===== Credentials =======================================================
+  // Vault-touching calls pop an approve/deny prompt in Phi and can hand a real
+  // secret to a test process, so nothing here asks for one. What IS asserted:
+  // every refusal that fires BEFORE the vault is consulted (argument shapes,
+  // the origin guard) plus `cred-status`, which needs no approval and no
+  // secret. cred-fill/cred-run/cred-get against a real item are the
+  // engine's own scripts/selftest-credentials.mjs, run with a vault domain.
+  console.log('\n# Credentials')
+  await T('cred-status', async () => {
+    const r = assertOk(await run(['cred-status', '--json']), 'cred-status')
+    const s = JSON.parse(r.out).status
+    assert(['ready', 'locked', 'logged_out', 'not_installed', 'disabled', 'unavailable'].includes(s),
+      `unexpected status ${JSON.stringify(s)}`)
+    return s
+  })
+  await T('cred-get demands --purpose', async () => {
+    const r = await run(['cred-get', 'example.com'])
+    assert(r.code === 2, `expected usage exit 2, got ${r.code}`)
+    assertHas(clean(r), '--purpose is required', 'purpose refusal')
+  })
+  await T('credential query must name something', async () => {
+    const r = await run(['cred-get', '--purpose', 'test'])
+    assert(r.code === 2, `expected usage exit 2, got ${r.code}`)
+    assertHas(clean(r), 'give a domain, or --id / --search', 'empty query refusal')
+  })
+  await T('--username only narrows a domain query', async () => {
+    const r = await run(['cred-get', '--id', 'x', '--username', 'u', '--purpose', 'test'])
+    assert(r.code === 2, `expected usage exit 2, got ${r.code}`)
+    assertHas(clean(r), 'narrows a domain query', 'username/id refusal')
+  })
+  await T('cred-run needs a command after --', async () => {
+    const r = await run(['cred-run', 'example.com', '--env', 'X=password'])
+    assert(r.code === 2, `expected usage exit 2, got ${r.code}`)
+    assertHas(clean(r), 'give the command after', 'missing-command refusal')
+  })
+  await T('cred-run rejects a malformed --env', async () => {
+    const r = await run(['cred-run', 'example.com', '--env', 'NOEQUALS', '--', 'true'])
+    assert(r.code === 2, `expected usage exit 2, got ${r.code}`)
+    assertHas(clean(r), 'expects VAR=field', 'env-shape refusal')
+  })
+  await T('cred-run rejects an unknown credential field', async () => {
+    // The lib validates the mapping before any vault contact.
+    const r = await run(['cred-run', 'example.com', '--env', 'X=nosuchfield', '--', 'true'])
+    assert(r.code !== 0, 'accepted an unknown field')
+    assertHas(clean(r), "unknown field 'nosuchfield'", 'field validation')
+  })
+  await T('--env repeats instead of overwriting', async () => {
+    const { parseArgv } = await import('../src/cli.mjs')
+    const p = parseArgv(['cred-run', 'db', '--env', 'A=password', '--env', 'B=username', '--', 'psql', '-h', 'db'])
+    assert(JSON.stringify(p.flags.env) === '["A=password","B=username"]', `env=${JSON.stringify(p.flags.env)}`)
+    // Everything after `--` is the child's argv: its own -h must not be eaten
+    // as the CLI's --help.
+    assert(JSON.stringify(p.args) === '["db","psql","-h","db"]', `args=${JSON.stringify(p.args)}`)
+  })
+  await T('cred-fill refuses coordinates as a target', async () => {
+    const r = await run(['-s', S, 'cred-fill', '10,10', 'example.com'])
+    assert(r.code !== 0, 'accepted coordinates')
+    assertHas(clean(r), 'needs an element target', 'coordinate refusal')
+  })
+  await T('cred-fill is origin-bound (refuses before touching the vault)', async () => {
+    // The page is on example.com; the credential is for another site. The
+    // pre-check fires client-side, so no approval prompt is spent.
+    assertOk(await run(['-s', S, 'goto', 'https://example.com', '--quiet']), 'goto for origin check')
+    const r = await run(['-s', S, 'cred-fill', 'css:#nope', 'github.com'])
+    assert(r.code !== 0, 'filled across origins')
+    assertHas(clean(r), 'origin_mismatch', 'origin guard')
+  })
+  SKIP('cred-fill (real vault item)', 'pops an approval prompt and needs a vault domain — see the engine\'s selftest-credentials.mjs')
+  SKIP('cred-run (real vault item)', 'pops an approval prompt and injects a real secret')
+  SKIP('cred-get (real vault item)', 'pops an approval prompt and reveals a real secret')
+
   // ===== Session-level =====================================================
   console.log('\n# Session-level')
   await T('sessions', async () => assertHas(clean(assertOk(await run(['sessions']))), S, 'sessions'))
@@ -340,6 +411,27 @@ async function main() {
   await T('narrate', async () => assertHas(clean(assertOk(await run(['-s', S, 'narrate', 'testing']))), 'narrated', 'narrate'))
   await SMOKE('messages', async () => assertOk(await run(['-s', S, 'messages'])))
   await T('run-code', async () => assertHas(clean(assertOk(await run(['-s', S, 'run-code'], { input: "cliLog('RC:' + (await pageInfo()).title)" }))), 'RC:', 'run-code'))
+  await T('script (raw runner, nothing prepended)', async () => {
+    // No enterContext is prepended, so the script must bind its own context —
+    // that IS the difference from run-code, and asserting it here is what
+    // stops a future refactor from quietly re-adding a bind.
+    const r = assertOk(await run(['script'], {
+      input: `await enterContext({ kind: 'agent', name: 'clitest-script' })\n` +
+             `cliLog('SC:' + (await pageInfo()).url)`,
+    }), 'script')
+    assertHas(clean(r), 'SC:', 'script output')
+    await run(['-s', 'clitest-script', 'close'])
+  })
+  await T('script propagates the runner exit code verbatim', async () => {
+    // `phi script` must be exactly `node runner.mjs`: a script's own exit
+    // code survives the trip, and empty stdin is the runner's 2, not a
+    // generic CLI failure.
+    const seven = await run(['script'], { input: 'process.exit(7)' })
+    assert(seven.code === 7, `process.exit(7) came back as ${seven.code}`)
+    const empty = await run(['script'], { input: '' })
+    assert(empty.code === 2, `empty stdin came back as ${empty.code}`)
+    assertHas(clean(empty), 'empty script on stdin', 'runner empty-stdin message')
+  })
   await SMOKE('install --skills', async () => assertHas(clean(assertOk(await run(['install', '--skills']))), 'installed', 'install'))
 
   SKIP('handoff', 'interactive — hands control to the user')

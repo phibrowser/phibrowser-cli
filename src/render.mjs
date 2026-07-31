@@ -165,6 +165,33 @@ export function renderSplitViews(views) {
   }).join('\n')
 }
 
+// What each password-manager state means for the caller's next move — every
+// not-ready one is fixed by the user in Phi, never by retrying.
+const CRED_STATUS_HINT = {
+  ready: 'vault unlocked; each credential command still asks the user to approve',
+  locked: 'ask the user to unlock it (Phi ▸ Settings ▸ General ▸ Bitwarden)',
+  logged_out: 'ask the user to sign in (Phi ▸ Settings ▸ General ▸ Bitwarden)',
+  not_installed: 'no password manager is set up in this Phi Browser',
+  disabled: 'the password manager is switched off in Phi ▸ Settings ▸ General',
+  unavailable: 'this Phi build has no password-manager surface',
+}
+
+export function renderCredentialStatus(res) {
+  const status = res?.status ?? 'unknown'
+  const hint = CRED_STATUS_HINT[status]
+  return `${status}${res?.ready ? '' : ' (not ready)'}${hint ? ` — ${hint}` : ''}`
+}
+
+// A fetched vault item, one field per line. Values are NOT masked: `cred-get`
+// exists to reveal them, the user approved that reveal by name, and a masked
+// answer would just send the caller back for another approval.
+export function renderCredential(cred) {
+  if (!cred || typeof cred !== 'object') return '(no credential)'
+  const first = ['type', 'name'].filter((k) => cred[k] !== undefined)
+  const keys = [...first, ...Object.keys(cred).filter((k) => !first.includes(k))]
+  return keys.length ? keys.map((k) => `${k}: ${cred[k]}`).join('\n') : '(empty credential)'
+}
+
 export function renderSpaceTabs(tabs) {
   if (!tabs?.length) return '(no tabs)'
   return tabs.map((t) => {

@@ -159,12 +159,13 @@ per-command flags.
 
 | Group | Commands |
 |---|---|
-| Session | `open` `close` `close-all` `sessions` `profiles` `status` `ping` `narrate` `messages` `handoff` `takeover` `watch` `run-code` `install --skills/--browser` |
+| Session | `open` `close` `close-all` `sessions` `profiles` `status` `ping` `narrate` `messages` `handoff` `takeover` `watch` `run-code` `script` `install --skills/--browser` |
 | Navigation | `goto` `reload` `back` `forward` `tabs` `tab-new` `tab-select` `tab-close` |
 | Observe | `snapshot` (`--filename`) `find` `screenshot` `pdf` `archive` `eval` (`--on`) `console` `requests` `info` `challenge` `highlight` |
 | Act | `click` `hover` `fill` `type` `press` `check` `uncheck` `select` `drag` `scroll` `upload` `dialog` `accept-cookies` `viewport` `keydown` `keyup` `mousemove` `mousedown` `mouseup` `mousewheel` |
 | Wait | `wait` (seconds, `--load`, `--idle`, `--element`, `--fn`) |
 | Storage | `cookies` `cookie-get` `cookie-set` `cookie-delete` `cookie-clear` `localstorage-*` `sessionstorage-*` `state-save` `state-load` |
+| Credentials | `cred-status` `cred-fill` `cred-run` `cred-get` |
 | Manage | `space-list/create/update/delete/activate/open/tabs` `focus` `profile-create/rename` `rules` `rule-add/delete` `pins` `pin-add/remove` `bookmarks` `bookmark-add/folder/update/move/remove` `group-*` `ungroup` `split-*` `downloads` `download` `user-space` |
 
 ### Browser management
@@ -215,9 +216,82 @@ Space, and re-attaching to that Space's selected tab each invocation. Notes:
 `eval --on <target>` runs the expression with a target element as `this`
 (the element-scoped `eval`). `run-code` pipes a phi-browser heredoc script
 bound to the session — the escape hatch for anything without a dedicated
-command. `install --skills` writes `skill/SKILL.md` into the agent skill dirs
+command.
+
+`script` is the same escape hatch with nothing added: it is *exactly*
+`node <skill>/scripts/runner.mjs`, so you get the engine's full helper surface
+with no `enterContext` prepended and no Space bound.
+
+```bash
+phi script <<< 'cliLog((await pageInfo()).title)'
+phi script < my-flow.mjs
+```
+
+Stdio is inherited, so here-strings, heredocs, pipes and `< file` all reach the
+runner byte-for-byte, and its exit code comes back untranslated (a script's
+`process.exit(7)` exits 7; an empty stdin exits 2). Use `run-code` when you
+want the session's agent Space entered for you; use `script` when you want the
+raw runner — including binding a *different* context yourself, or none at all.
+Because the CLI resolves the engine the same way it does for every other
+command, `script` always runs the build it would actually drive: no hunting for
+the skill directory, and no chance of pairing one build's engine with another's
+browser. `install --skills` writes `skill/SKILL.md` into the agent skill dirs
 that exist (`~/.claude`, `~/.codex`, `~/.pi/agent`); `install --browser`
 installs Phi Browser itself (see [Exit codes](#exit-codes)).
+
+### Credentials — the user's password manager
+
+Signing in comes from the user's vault, not from asking them to paste a
+secret. Three commands, ordered by how far the secret travels — use the first
+one that does the job:
+
+```bash
+phi cred-status                                   # ready / locked / logged_out / not_installed
+
+# 1. Into a page. Phi fills the field itself: app → page, never through the CLI.
+phi -s work cred-fill 'loc=css:#login' github.com --field username
+phi -s work cred-fill 'loc=css:#password' github.com
+phi -s work click @7                              # the Sign in button from the map
+
+# 2. Into a command's environment. app → this process → the child, never printed.
+phi cred-run db.internal --env PGPASSWORD=password -- psql -h db.internal -c 'select 1'
+
+# 3. Into your context. Last resort — and the only one that needs --purpose.
+phi cred-get github.com --purpose 'write the API token into ~/.netrc' --fields password
+```
+
+- **Every** secret-touching call pops an approve/deny prompt in Phi naming the
+  caller, the site, and the *kind* of exposure (fill / run / reveal). A
+  remembered grant covers only the kind it was approved for, so a denied
+  `cred-get` can follow an approved `cred-fill` — that is the user declining
+  the escalation, not the task.
+- `cred-get` requires `--purpose`. The other two compose their prompt line
+  from what they are about to do; a reveal has nothing to compose it from, and
+  the most exposing call should not be the one the user approves with the
+  least to read.
+- **Fills are origin-bound.** Filling a `github.com` login into a page on
+  another host is refused (`origin_mismatch`) — that mismatch is exactly how a
+  misleading page or an injected instruction would exfiltrate a password.
+  Don't route around it with `cred-get`; if the user confirmed the page
+  legitimately takes that login (an SSO portal), pass `--allow-cross-origin`.
+- **TOTP/2FA is never exposed.** Releasing a live second factor to an agent
+  collapses both factors behind one approval — hand the step back:
+  `phi handoff "Enter your 2FA code, then hand back"`.
+- Secrets don't ride back in: page scans report password inputs as `•••`, and
+  every secret the round handled is scrubbed from everything it prints.
+  Verify a login by its outcome (the post-submit page), never by reading the
+  value back.
+- The query is a bare domain, or `--id` / `--search` for vault items that have
+  no domain — domain queries reach logins only, so secure notes, cards,
+  identities and SSH keys come via `--search 'item name'`. When several items
+  match, Phi releases nothing and the call fails `ambiguous` with the
+  candidates: narrow with `--username` (or `--id`) and retry. Phi never picks
+  an account on the user's behalf.
+- Same Agent-permissions gate as browser management (exit **4** when off). A
+  vault that will not serve — denied, locked, signed out, not installed —
+  exits **6**; see [Exit codes](#exit-codes).
+
+Full semantics live in the engine's `references/credentials.md`.
 
 ### Config file
 
@@ -284,7 +358,16 @@ assertions; without it, that group is skipped.
 ## Exit codes
 
 `0` ok · `1` command failed · `2` usage · `3` user holds control ·
-`4` browser-management disabled · `5` no usable Phi Browser
+`4` browser-management disabled · `5` no usable Phi Browser ·
+`6` credential request refused
+
+Exit **6** means the vault did not serve and repeating the call cannot change
+that — only the user can. Either they denied the approval prompt (their answer
+to that exposure; ask them or take a path that needs no secret) or the password
+manager is locked / signed out / not installed (`cred-status` says which).
+Credential errors the *caller* can fix — `ambiguous`, `origin_mismatch` — stay
+at exit 1, because narrowing the query or confirming the page is your move,
+not theirs.
 
 Exit **5** means there is no browser to drive, so retrying is pointless until
 a human acts. The CLI walks one ladder to say *which* thing to do, in the
