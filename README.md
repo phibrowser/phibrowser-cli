@@ -100,9 +100,12 @@ Releasing (publish + Homebrew tap sync) is documented in
   loads the engine that ships in the app bundle. Run it without one and it
   offers to install it for you (see [Exit codes](#exit-codes)); Canary is
   exempt from the version floor
-- Phi Browser running, with Settings ▸ Developer ▸ Remote debugging ▸ "Allow
-  agents to control Phi (CDP)" enabled (the raw `--remote-debugging-port` is
-  not enough — agent Spaces need the authenticated app socket)
+- Nothing else. Phi Browser does not have to be running or configured: the
+  CLI starts it when no browser is up, and Phi answers whether or not agent
+  control is switched on — the consent prompt it raises turns that on as part
+  of approving you. Set `PHI_NO_LAUNCH=1` to forbid the CLI from starting your
+  browser. (Older builds still gate the socket behind the Settings toggle;
+  the CLI says so when it meets one.)
 - A Phi build whose `AgentPeerIdentity.ownBrandNames` includes
   `phibrowser-cli`. The CLI brands itself via `process.title` so the app
   treats it as skill plumbing — acting for whoever drives it (the coding
@@ -406,14 +409,20 @@ Exit **5** means there is no browser to drive, so retrying is pointless until
 a human acts. The CLI walks one ladder to say *which* thing to do, in the
 order you'd have to do them — each rung's advice is wrong for the rungs above
 it, and telling someone on an old build to find a Settings toggle it doesn't
-have is the case this avoids:
+have is the case this avoids.
+
+Rungs 3 and 4 are narrower than they look, because a healthy current setup
+never reaches them: the CLI starts Phi when nothing is running, and a current
+Phi publishes its socket whether or not agent control is on. So rung 3 means
+starting it actually failed, and rung 4 means the running build predates the
+always-on socket.
 
 | | Situation | What it does |
 |---|---|---|
 | 1 | No Phi Browser installed | **offers to install it for you** (see below) |
 | 2 | Stable Phi older than **2.4.0** | **offers to update it** — agent control starts at 2.4.0 |
-| 3 | Installed and current, not running | offers to launch it |
-| 4 | Running, but agent control off | offers to open Settings ▸ General to enable it |
+| 3 | Installed and current, would not start | says why — the CLI already tried |
+| 4 | Running, but published no socket | an older build: offers to open Settings ▸ General to enable agent control |
 
 **Canary is exempt from rung 2**: it is the prerelease channel and versions
 itself by name, so it is never called out of date. Rung 2 also fires when an
@@ -442,8 +451,8 @@ Downloading Phi Browser 2.4.0 (329 MB)…
 Verifying signature…
 Installed /Applications/Phi.app
 
-Next: launch Phi Browser and enable Settings ▸ Developer ▸ Remote
-debugging ▸ "Allow agents to control Phi (CDP)", then run this again.
+Next: just run this again — the CLI starts Phi Browser itself and
+Phi asks you to approve this agent, which turns agent control on.
 ```
 
 Same thing without a terminal, for scripts and provisioning:

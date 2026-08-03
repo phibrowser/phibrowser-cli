@@ -2367,6 +2367,14 @@ async function confirm(question, timeoutMs = 20000) {
  * user has to fix things: install it → update it → start it → enable it.
  * Each rung's advice is wrong for the rungs above it — telling someone on an
  * old build to find a Settings toggle it does not have is the case to avoid.
+ *
+ * The engine starts Phi itself now (connectBrowser in cdp.mjs), so the last
+ * two rungs are narrower than they read: "start it" is reached only when
+ * launching was suppressed or failed, and "enable it" only on a build old
+ * enough that the toggle still hides the socket. Current builds answer
+ * whether or not agent control is on, and the consent prompt they raise
+ * turns it on as part of allowing the agent. Both rungs stay because the CLI
+ * supports every build from 2.4.0 up.
  */
 function diagnoseBrowser() {
   // A running browser is the one a round actually reaches, so judge that one
@@ -2430,8 +2438,8 @@ async function offerInstall(d) {
 
   try {
     const app = await installBrowser({ release, log: (line) => console.error(line) })
-    console.error('\nNext: launch Phi Browser and enable Settings ▸ Developer ▸ Remote\n' +
-                  'debugging ▸ "Allow agents to control Phi (CDP)", then run this again.')
+    console.error('\nNext: just run this again — the CLI starts Phi Browser itself and\n' +
+                  'Phi asks you to approve this agent, which turns agent control on.')
     if (await confirm('\nLaunch it now? [Y/n] ')) openMac(['-a', app])
     return 5
   } catch (err) {
@@ -2485,18 +2493,30 @@ async function reportNoBrowser(flags, detail) {
     return 5
   }
 
+  // Not running AND the engine's own launch did not bring it up — it is
+  // suppressed (PHI_NO_LAUNCH), or `open` could not start that bundle.
   if (d.kind === 'stopped') {
-    console.error(`${PROG}: Phi Browser is installed but not running — start it, then retry.`)
-    if (canPrompt(flags) && await confirm(`\nStart ${d.app} now? [Y/n] `)) {
+    console.error(`${PROG}: Phi Browser is installed but would not start.` +
+      (process.env.PHI_NO_LAUNCH
+        ? ' PHI_NO_LAUNCH is set, so\nthe CLI left it alone — start it yourself, or unset that to let the\nCLI start it.'
+        : ` Starting ${d.app} failed —\ntry launching it by hand to see what it says.`))
+    if (!process.env.PHI_NO_LAUNCH && canPrompt(flags)
+        && await confirm(`\nTry starting ${d.app} again? [Y/n] `)) {
       openMac(['-a', d.app])
       console.error('Launching Phi Browser — retry once it is up.')
     }
     return 5
   }
 
-  console.error(`${PROG}: Phi Browser is running, but agent control is off. Enable\n` +
-    'Settings ▸ Developer ▸ Remote debugging ▸ "Allow agents to control Phi (CDP)"\n' +
-    '— it applies immediately, no relaunch — then approve this agent when asked.')
+  // A running, capable build that published no socket predates the always-on
+  // endpoint, where the toggle really did gate it. Current builds answer with
+  // agent control off and offer to turn it on in the consent prompt, so they
+  // never reach here.
+  console.error(`${PROG}: Phi Browser is running but published no agent socket.\n` +
+    'On this build that means agent control is off — enable Settings ▸ Developer\n' +
+    '▸ Remote debugging ▸ "Allow agents to control Phi (CDP)", then approve this\n' +
+    'agent when asked. Newer builds ask instead of hiding the endpoint, so\n' +
+    'updating Phi removes this step for good.')
   if (canPrompt(flags) && await confirm('\nOpen that Settings page now? [Y/n] ')) {
     openMac(['-a', d.app, SETTINGS_DEEPLINK])
     console.error('Opened Settings ▸ General — the Developer section is there.')
