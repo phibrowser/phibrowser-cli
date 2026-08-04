@@ -1541,7 +1541,11 @@ cmd({
       ctx.print(`would install Phi Browser ${release.version}\n  ${release.url}`)
       return
     }
-    const app = await installBrowser({ release, log: (line) => console.error(line) })
+    const app = await installBrowser({
+      release,
+      log: (line) => console.error(line),
+      progress: downloadProgress(),
+    })
     ctx.print(`ok: ${app}`)
   },
 })
@@ -2398,6 +2402,44 @@ function openMac(args) {
 }
 
 /**
+ * In-place download meter for interactive installs: one stderr status line
+ * (bar · percent · sizes · rate) redrawn at ~10 fps, finalized to a newline
+ * by `done()`. Returns null off a TTY, which leaves install-browser's plain
+ * percent lines in charge — CI logs get lines, not carriage returns.
+ */
+function downloadProgress() {
+  if (!process.stderr.isTTY) return null
+  const started = Date.now()
+  const mb = (n) => (n / 1e6).toFixed(1)
+  let lastDraw = 0
+  let drew = false
+  return {
+    update(seen, total) {
+      const now = Date.now()
+      const finalFrame = total > 0 && seen >= total
+      if (!finalFrame && now - lastDraw < 100) return
+      lastDraw = now
+      drew = true
+      const rate = now > started ? seen / ((now - started) / 1000) : 0
+      let line
+      if (total > 0) {
+        const pct = Math.min(100, Math.floor((seen / total) * 100))
+        const slots = 26
+        const filled = Math.min(slots, Math.round((pct / 100) * slots))
+        line = `  ${'█'.repeat(filled)}${'░'.repeat(slots - filled)} ` +
+               `${String(pct).padStart(3)}% · ${mb(seen)} / ${mb(total)} MB · ${mb(rate)} MB/s`
+      } else {
+        line = `  ${mb(seen)} MB · ${mb(rate)} MB/s`
+      }
+      process.stderr.write(`\r\x1b[2K${line}`)
+    },
+    done() {
+      if (drew) process.stderr.write('\n')
+    },
+  }
+}
+
+/**
  * Returned instead of an exit code when an install just succeeded: the
  * original command deserves to carry through in this same invocation, so
  * `main` runs one more pass that loads the fresh app's engine, starts the
@@ -2445,7 +2487,11 @@ async function offerInstall(d) {
   }
 
   try {
-    const app = await installBrowser({ release, log: (line) => console.error(line) })
+    const app = await installBrowser({
+      release,
+      log: (line) => console.error(line),
+      progress: downloadProgress(),
+    })
     // Carry the original command through in this same invocation. The launch
     // passes `-skip-onboarding` so the fresh profile lands in Guest Mode with
     // a window for CDP to attach to, instead of sitting at the onboarding

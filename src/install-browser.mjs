@@ -117,10 +117,13 @@ function installRoot() {
 
 /**
  * Download, verify, and install the newest stable Phi Browser.
- * `log` receives human-facing progress lines, `into` overrides the install
- * directory (tests point it at a scratch dir). Returns the installed path.
+ * `log` receives human-facing progress lines; `progress` — an optional
+ * `{update(seen, total), done()}` — takes over download reporting (an
+ * interactive caller passes an in-place meter; without one, plain percent
+ * lines go through `log`). `into` overrides the install directory (tests
+ * point it at a scratch dir). Returns the installed path.
  */
-export async function installBrowser({ log = () => {}, release, into } = {}) {
+export async function installBrowser({ log = () => {}, progress, release, into } = {}) {
   const rel = release ?? await latestRelease()
   const work = await mkdtemp(join(tmpdir(), 'phibrowser-install-'))
   const archive = join(work, 'Phi.zip')
@@ -128,10 +131,12 @@ export async function installBrowser({ log = () => {}, release, into } = {}) {
     const mb = (n) => `${(n / 1e6).toFixed(0)} MB`
     log(`Downloading Phi Browser ${rel.version} (${mb(rel.length)})…`)
     let lastShown = 0
-    await download(rel.url, archive, (seen, total) => {
+    const update = progress?.update ?? ((seen, total) => {
       const pct = total ? Math.floor((seen / total) * 100) : 0
       if (pct >= lastShown + 10) { lastShown = pct; log(`  ${pct}%`) }
     })
+    await download(rel.url, archive, update)
+    progress?.done?.()
 
     const size = (await stat(archive)).size
     if (rel.length && size !== rel.length) {
