@@ -1,6 +1,6 @@
 {
   "name": "@phibrowser/cli",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Command-line browser automation for Phi Browser — drives agent Spaces over CDP, playwright-cli style",
   "keywords": [
     "phibrowser",
