@@ -15,6 +15,26 @@ if (Number(process.versions.node.split('.')[0]) < 22) {
   process.exit(2)
 }
 
+// Apple silicon Macs only, matching the browser builds the CLI drives. The
+// hardware is the gate, not the Node build: an x64 Node under Rosetta on an
+// Apple silicon Mac (sysctl.proc_translated = 1) still passes.
+if (process.platform !== 'darwin') {
+  console.error('phi: macOS on Apple silicon required (drives the Phi Browser mac app)')
+  process.exit(2)
+}
+if (process.arch !== 'arm64') {
+  let translated = '0'
+  try {
+    const { execFileSync } = await import('node:child_process')
+    translated = execFileSync('sysctl', ['-n', 'sysctl.proc_translated'],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()
+  } catch { /* Intel Macs do not define the key */ }
+  if (translated !== '1') {
+    console.error('phi: Apple silicon Mac required — Intel Macs are not supported')
+    process.exit(2)
+  }
+}
+
 const { main, disposeHelpers } = await import('../src/cli.mjs')
 
 // Mirror the skill runner's lifecycle discipline: a floating rejection or a

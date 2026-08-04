@@ -13,6 +13,8 @@ class PhiCli < Formula
   license "Apache-2.0"
 
   # The CLI drives the Phi Browser macOS app over its app-owned Unix socket.
+  # Apple silicon only, matching the browser builds it drives.
+  depends_on arch: :arm64
   depends_on :macos
   depends_on "node"
 
