@@ -2440,7 +2440,11 @@ async function offerInstall(d) {
     const app = await installBrowser({ release, log: (line) => console.error(line) })
     console.error('\nNext: just run this again — the CLI starts Phi Browser itself and\n' +
                   'Phi asks you to approve this agent, which turns agent control on.')
-    if (await confirm('\nLaunch it now? [Y/n] ')) openMac(['-a', app])
+    if (await confirm('\nLaunch it now? [Y/n] ')) {
+      // A just-installed Phi has a fresh profile: without `-skip-onboarding`
+      // it sits at the onboarding window with nothing for CDP to attach to.
+      openMac(['-a', app, '--args', '-skip-onboarding'])
+    }
     return 5
   } catch (err) {
     console.error(`\n${PROG}: install failed — ${err.message}`)
@@ -2502,7 +2506,7 @@ async function reportNoBrowser(flags, detail) {
         : ` Starting ${d.app} failed —\ntry launching it by hand to see what it says.`))
     if (!process.env.PHI_NO_LAUNCH && canPrompt(flags)
         && await confirm(`\nTry starting ${d.app} again? [Y/n] `)) {
-      openMac(['-a', d.app])
+      openMac(['-a', d.app, '--args', '-skip-onboarding'])
       console.error('Launching Phi Browser — retry once it is up.')
     }
     return 5
