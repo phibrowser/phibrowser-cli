@@ -2398,6 +2398,14 @@ function openMac(args) {
 }
 
 /**
+ * Returned instead of an exit code when an install just succeeded: the
+ * original command deserves to carry through in this same invocation, so
+ * `main` runs one more pass that loads the fresh app's engine, starts the
+ * browser, waits out the approval prompt, and executes the command.
+ */
+const RETRY_AFTER_INSTALL = Symbol('retry-after-install')
+
+/**
  * Ask, then actually do it. Answering yes downloads the release from Phi's
  * own Sparkle feed and installs it after both signature checks pass; the
  * download page is the fallback for every path that cannot get there.
@@ -2438,14 +2446,20 @@ async function offerInstall(d) {
 
   try {
     const app = await installBrowser({ release, log: (line) => console.error(line) })
-    console.error('\nNext: just run this again — the CLI starts Phi Browser itself and\n' +
-                  'Phi asks you to approve this agent, which turns agent control on.')
-    if (await confirm('\nLaunch it now? [Y/n] ')) {
-      // A just-installed Phi has a fresh profile: without `-skip-onboarding`
-      // it sits at the onboarding window with nothing for CDP to attach to.
+    // Carry the original command through in this same invocation. The launch
+    // passes `-skip-onboarding` so the fresh profile lands in Guest Mode with
+    // a window for CDP to attach to, instead of sitting at the onboarding
+    // gate; the retried command's first connection then raises Phi's
+    // approval prompt and waits for the answer.
+    if (process.env.PHI_NO_LAUNCH) {
+      console.error('\nInstalled. PHI_NO_LAUNCH is set, so start Phi Browser yourself — ' +
+                    'the command continues once it is up.')
+    } else {
       openMac(['-a', app, '--args', '-skip-onboarding'])
+      console.error('\nPhi Browser is starting — approve this agent when it asks, and ' +
+                    'this command will continue.')
     }
-    return 5
+    return RETRY_AFTER_INSTALL
   } catch (err) {
     console.error(`\n${PROG}: install failed — ${err.message}`)
     if (await confirm(`Open ${DOWNLOAD_URL} to install it yourself? [Y/n] `)) openMac([DOWNLOAD_URL])
@@ -2528,7 +2542,21 @@ async function reportNoBrowser(flags, detail) {
   return 5
 }
 
+/**
+ * One transparent second pass after a successful install: the first pass
+ * necessarily died the moment the engine was found missing, so the freshly
+ * installed app gets a pass that loads its engine, starts the browser, waits
+ * out the approval prompt, and runs the original command — install → launch
+ * → approve → command in a single invocation.
+ */
 export async function main(argv) {
+  const code = await runOnce(argv)
+  if (code !== RETRY_AFTER_INSTALL) return code
+  const retried = await runOnce(argv)
+  return retried === RETRY_AFTER_INSTALL ? 5 : retried
+}
+
+async function runOnce(argv) {
   let parsed
   try {
     parsed = parseArgv(argv)
