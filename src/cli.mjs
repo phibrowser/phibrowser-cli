@@ -2432,6 +2432,41 @@ function pinCanary() {
 }
 
 /**
+ * Holds the --canary pin for engines shipped before PHI_BUNDLE_ID: those
+ * keep their canary-then-stable discovery order, so with Canary installed
+ * but not yet serving (cold-starting after an install, or quit) and stable
+ * Phi running, they would connect to STABLE and quietly drive the wrong
+ * app. Start Canary ourselves and wait for ITS socket before the engine
+ * goes looking — pin-aware engines are unaffected, they only ever see the
+ * canary dir anyway.
+ */
+async function ensureCanarySocketUp() {
+  const app = process.env.PHIBROWSER_APP
+  if (!existsSync(join(app, 'Contents', 'MacOS'))) return  // absent — the install ladder speaks
+  const socketLive = () => {
+    try {
+      const pointer = join(homedir(), 'Library', 'Application Support',
+                           'com.phibrowser.canary.Mac', 'CDPAgentSocket')
+      const socketPath = readFileSync(pointer, 'utf8')
+        .split('\n').map((l) => l.trim()).filter(Boolean)[0]
+      return Boolean(socketPath && existsSync(socketPath))
+    } catch { return false }
+  }
+  const running = runningApps().some(isCanaryBundle)
+  if (running && socketLive()) return
+  if (process.env.PHI_NO_LAUNCH) return  // forbidden to start it — the round reports as usual
+  if (!running) openMac(['-g', '-a', app, '--args', '-skip-onboarding'])
+  if (socketLive()) return
+  console.error('(starting Phi Canary…)')
+  const deadline = Date.now() + 60000
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 400))
+    if (socketLive()) return
+  }
+  // Never came up — fall through and let the engine's own ladder say why.
+}
+
+/**
  * In-place download meter for interactive installs: one stderr status line
  * (bar · percent · sizes · rate) redrawn at ~10 fps, finalized to a newline
  * by `done()`. Returns null off a TTY, which leaves install-browser's plain
@@ -2703,6 +2738,10 @@ async function runOnce(argv) {
       return 1
     }
   }
+
+  // Before the engine picks a socket: a --canary round must never be
+  // answered by a running stable Phi (see ensureCanarySocketUp).
+  if (flags.canary) await ensureCanarySocketUp()
 
   let h
   try {
