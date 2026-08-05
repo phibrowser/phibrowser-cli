@@ -22,10 +22,12 @@ import {
 import { homedir } from 'node:os'
 import { dirname, join, resolve as resolvePath } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { installBrowser, latestRelease, releaseIsUsable } from './install-browser.mjs'
 import {
-  appStatus, describeApp, DOWNLOAD_URL, isCapableApp, loadHelpers,
-  MIN_APP_VERSION, resolveLibDir, SETTINGS_DEEPLINK,
+  CHANNELS, installBrowser, latestRelease, releaseIsUsable, releaseLabel,
+} from './install-browser.mjs'
+import {
+  appStatus, describeApp, DOWNLOAD_URL, isCanaryBundle, isCapableApp,
+  loadHelpers, MIN_APP_VERSION, resolveLibDir, SETTINGS_DEEPLINK,
 } from './resolve-lib.mjs'
 import {
   renderBookmarks, renderCredential, renderCredentialStatus, renderDownloads,
@@ -48,7 +50,7 @@ const DEFAULT_MAX_ELEMENTS = 150
 
 // Optional config: ~/.phibrowser/config.json overridden by ./.phibrowser/
 // config.json. Recognized keys: session, profile, persistent, quiet, json,
-// max, lib. Flags and env always win over config.
+// max, lib, canary. Flags and env always win over config.
 function loadConfig() {
   let cfg = {}
   for (const p of [join(homedir(), '.phibrowser', 'config.json'),
@@ -66,6 +68,7 @@ const GLOBAL_FLAGS = {
   'user-space': { type: 'str', short: 'U', desc: "drive a USER Space's real window instead of the agent Space (name or id)" },
   profile: { type: 'str', desc: 'browser profile for a newly created Space' },
   persistent: { type: 'bool', desc: 'create the Space as a permanent workspace' },
+  canary: { type: 'bool', desc: 'target Phi Canary — drive/launch it, install from the canary channel (env: PHIBROWSER_CANARY)' },
   json: { type: 'bool', desc: 'print raw JSON instead of compact text' },
   quiet: { type: 'bool', short: 'q', desc: 'suppress the after-command page summary' },
   max: { type: 'num', desc: `cap printed elements/lines (default ${DEFAULT_MAX_ELEMENTS})` },
@@ -1516,7 +1519,7 @@ cmd({
   name: 'install', group: 'Session', sig: 'install skill [agent...] | browser',
   desc: 'Install the phi-browser skill for your agents, or Phi Browser itself',
   flags: {
-    browser: { type: 'bool', desc: 'download and install Phi Browser from the official update feed' },
+    browser: { type: 'bool', desc: 'download and install Phi Browser from the official update feed (--canary: the canary channel, as Phi Canary.app)' },
     force: { type: 'bool', desc: 'with `skill`: replace a real directory sitting where the link goes' },
     'dry-run': { type: 'bool', desc: 'report what would happen, change nothing' },
   },
@@ -1532,13 +1535,14 @@ cmd({
     }
     // The same installer the missing-browser prompt runs, reachable without
     // a TTY so scripts and agents can provision deliberately.
-    const release = await latestRelease()
+    const channel = ctx.flags.canary ? 'canary' : 'stable'
+    const release = await latestRelease({ channel })
     if (!releaseIsUsable(release)) {
       throw new Error(`the current stable release is ${release.version}, below the ` +
         `${MIN_APP_VERSION} agent control needs — nothing worth installing yet`)
     }
     if (ctx.flags['dry-run']) {
-      ctx.print(`would install Phi Browser ${release.version}\n  ${release.url}`)
+      ctx.print(`would install ${CHANNELS[channel].label} ${releaseLabel(release)}\n  ${release.url}`)
       return
     }
     const app = await installBrowser({
@@ -2402,6 +2406,32 @@ function openMac(args) {
 }
 
 /**
+ * --canary points every app-naming path — engine load, diagnosis, launch,
+ * install — at Phi Canary, riding the same exclusive pin $PHIBROWSER_APP
+ * gives one bundle. With Canary absent the pin still holds (at the path an
+ * install would create), so stable never quietly answers a canary round; the
+ * missing-browser ladder then offers the canary channel. PHI_BUNDLE_ID
+ * narrows the engine's socket discovery and launch the same way (engines
+ * that predate the variable ignore it and keep their canary-first order).
+ * An explicit $PHIBROWSER_APP naming a Canary bundle (a dev build, say) is
+ * already the pin and is left alone; one naming stable contradicts the flag.
+ */
+function pinCanary() {
+  const pinned = process.env.PHIBROWSER_APP
+  if (pinned && !isCanaryBundle(pinned)) {
+    throw new Error(`--canary conflicts with $PHIBROWSER_APP=${pinned} — ` +
+      'drop the flag or point the variable at a Phi Canary bundle')
+  }
+  if (!pinned) {
+    const installed = ['/Applications', join(homedir(), 'Applications')]
+      .map((dir) => join(dir, 'Phi Canary.app'))
+      .find((app) => existsSync(join(app, 'Contents', 'MacOS')))
+    process.env.PHIBROWSER_APP = installed ?? '/Applications/Phi Canary.app'
+  }
+  process.env.PHI_BUNDLE_ID ??= 'com.phibrowser.canary.Mac'
+}
+
+/**
  * In-place download meter for interactive installs: one stderr status line
  * (bar · percent · sizes · rate) redrawn at ~10 fps, finalized to a newline
  * by `done()`. Returns null off a TTY, which leaves install-browser's plain
@@ -2449,17 +2479,21 @@ const RETRY_AFTER_INSTALL = Symbol('retry-after-install')
 
 /**
  * Ask, then actually do it. Answering yes downloads the release from Phi's
- * own Sparkle feed and installs it after both signature checks pass; the
- * download page is the fallback for every path that cannot get there.
+ * own Sparkle feed — the canary feed under --canary — and installs it after
+ * both signature checks pass; the download page is the fallback for every
+ * stable path that cannot get there (canary has no download page).
  */
-async function offerInstall(d) {
+async function offerInstall(d, flags) {
+  const channel = flags?.canary ? 'canary' : 'stable'
+  const appLabel = CHANNELS[channel].label
   const verb = d.kind === 'outdated' ? 'Update' : 'Install'
   let release
   try {
-    release = await latestRelease()
+    release = await latestRelease({ channel })
   } catch (err) {
     console.error(`(could not reach the update feed: ${err.message})`)
-    if (await confirm(`\nOpen ${DOWNLOAD_URL} instead? [Y/n] `)) openMac([DOWNLOAD_URL])
+    if (channel === 'stable' &&
+        await confirm(`\nOpen ${DOWNLOAD_URL} instead? [Y/n] `)) openMac([DOWNLOAD_URL])
     return 5
   }
 
@@ -2481,8 +2515,10 @@ async function offerInstall(d) {
     return 5
   }
 
-  if (!await confirm(`\n${verb} Phi Browser ${release.version} now? [Y/n] `)) {
-    console.error(`Skipped. ${DOWNLOAD_URL} has the download when you want it.`)
+  if (!await confirm(`\n${verb} ${appLabel} ${releaseLabel(release)} now? [Y/n] `)) {
+    console.error(channel === 'stable'
+      ? `Skipped. ${DOWNLOAD_URL} has the download when you want it.`
+      : `Skipped. Re-run with --canary when you want it installed.`)
     return 5
   }
 
@@ -2498,17 +2534,18 @@ async function offerInstall(d) {
     // gate; the retried command's first connection then raises Phi's
     // approval prompt and waits for the answer.
     if (process.env.PHI_NO_LAUNCH) {
-      console.error('\nInstalled. PHI_NO_LAUNCH is set, so start Phi Browser yourself — ' +
+      console.error(`\nInstalled. PHI_NO_LAUNCH is set, so start ${appLabel} yourself — ` +
                     'the command continues once it is up.')
     } else {
       openMac(['-a', app, '--args', '-skip-onboarding'])
-      console.error('\nPhi Browser is starting — approve this agent when it asks, and ' +
+      console.error(`\n${appLabel} is starting — approve this agent when it asks, and ` +
                     'this command will continue.')
     }
     return RETRY_AFTER_INSTALL
   } catch (err) {
     console.error(`\n${PROG}: install failed — ${err.message}`)
-    if (await confirm(`Open ${DOWNLOAD_URL} to install it yourself? [Y/n] `)) openMac([DOWNLOAD_URL])
+    if (channel === 'stable' &&
+        await confirm(`Open ${DOWNLOAD_URL} to install it yourself? [Y/n] `)) openMac([DOWNLOAD_URL])
     return 5
   }
 }
@@ -2519,13 +2556,18 @@ async function reportNoBrowser(flags, detail) {
   const d = diagnoseBrowser()
 
   if (d.kind === 'absent' || d.kind === 'outdated') {
+    // The canary pin plants $PHIBROWSER_APP itself, so the generic "unset it"
+    // advice would blame a variable the user never set — name the flag.
     console.error(`${PROG}: ${d.kind === 'absent'
-      ? detail?.message ?? 'Phi Browser is not installed. The CLI drives the app — ' +
-        `it needs Phi Browser ${MIN_APP_VERSION}+ (free, macOS): ${DOWNLOAD_URL}`
+      ? flags.canary
+        ? '--canary: Phi Canary is not installed (looked in /Applications ' +
+          'and ~/Applications).'
+        : detail?.message ?? 'Phi Browser is not installed. The CLI drives the app — ' +
+          `it needs Phi Browser ${MIN_APP_VERSION}+ (free, macOS): ${DOWNLOAD_URL}`
       : `Phi Browser ${d.version} at ${d.app} is older than ${MIN_APP_VERSION}, ` +
         'which is where agent control begins — this CLI cannot drive it.'}`)
     if (canPrompt(flags)) {
-      return await offerInstall(d)
+      return await offerInstall(d, flags)
     }
     if (d.kind === 'outdated') {
       console.error(`Update it (Phi ▸ Check for Updates…) or download ${MIN_APP_VERSION}+: ${DOWNLOAD_URL}`)
@@ -2624,8 +2666,17 @@ async function runOnce(argv) {
 
   const cfg = loadConfig()
   if (cfg.lib && !process.env.PHIBROWSER_CLI_LIB) process.env.PHIBROWSER_CLI_LIB = cfg.lib
-  for (const k of ['profile', 'persistent', 'quiet', 'json', 'max']) {
+  for (const k of ['profile', 'persistent', 'quiet', 'json', 'max', 'canary']) {
     if (flags[k] === undefined && cfg[k] !== undefined) flags[k] = cfg[k]
+  }
+  if (flags.canary === undefined && process.env.PHIBROWSER_CANARY) flags.canary = true
+  if (flags.canary) {
+    try {
+      pinCanary()
+    } catch (err) {
+      console.error(`${PROG}: ${err.message}`)
+      return 2
+    }
   }
   const session = flags.session || process.env.PHIBROWSER_SESSION ||
                   cfg.session || DEFAULT_SESSION

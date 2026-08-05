@@ -128,6 +128,13 @@ phi -s checkout close                       # complete the task, close the Space
 `--profile <name>` picks the browser profile and `--persistent` creates a
 permanent workspace — both apply only when the Space is first created.
 
+`--canary` (or `$PHIBROWSER_CANARY`, or `"canary": true` in the config) pins
+the whole round to **Phi Canary**: the engine loads from the Canary bundle,
+launch and diagnosis name only Canary, and the install paths use the canary
+channel — a running stable Phi never answers for a canary round. It rides the
+same exclusive pin `$PHIBROWSER_APP` gives one bundle, so combining the flag
+with a `$PHIBROWSER_APP` that names a stable bundle is refused.
+
 ## Output conventions
 
 - After **navigation** (`open`, `goto`, `back`, `tab-select`, …) the CLI
@@ -246,6 +253,7 @@ browser.
 phi install skill                # the phi-browser skill, for every agent present
 phi install skill claude codex   # only these agents
 phi install browser              # Phi Browser itself
+phi install browser --canary     # Phi Canary, from the canary channel
 ```
 
 `install skill` **symlinks** the phi-browser skill — the full engine, with its
@@ -460,11 +468,14 @@ Same thing without a terminal, for scripts and provisioning:
 ```bash
 phi install browser              # download, verify, install
 phi install browser --dry-run    # report the release, download nothing
+phi install browser --canary     # the canary channel, as Phi Canary.app
 ```
 
 It comes from Phi's own update feed — the Sparkle appcast the app itself
-updates from (`https://ota.phibrowser.com/mac-public/…`) — so it is the same
-build and the same channel, never a scraped link. Trust is **pinned in the
+updates from (`https://ota.phibrowser.com/mac-public/…`; `--canary` uses the
+`mac-nightly` appcast and installs `Phi Canary.app` beside stable, both
+signed with the same key) — so it is the same build and the same channel,
+never a scraped link. Trust is **pinned in the
 CLI**, since a machine with no Phi on it has nothing to read it from: the
 update host, Sparkle's `SUPublicEDKey`, and Developer ID team `87DQ3HMK5G`.
 Nothing is unpacked before its EdDSA signature verifies against that key, and
