@@ -8,8 +8,8 @@
 class PhiCli < Formula
   desc "Command-line automation for the Phi Browser app"
   homepage "https://github.com/phibrowser/phibrowser-cli"
-  url "https://registry.npmjs.org/@phibrowser/cli/-/cli-0.2.0.tgz"
-  sha256 "4850e3258b7366fa8fc96be3d247ed7df7e8522b101465ac311e26acfd53d0b3"
+  url "https://registry.npmjs.org/@phibrowser/cli/-/cli-0.3.0.tgz"
+  sha256 "28f3cc03bf3d2615c05522814098cb4891da7ccd41dc5cb1ff53157263456503"
   license "Apache-2.0"
 
   # The CLI drives the Phi Browser macOS app over its app-owned Unix socket.
