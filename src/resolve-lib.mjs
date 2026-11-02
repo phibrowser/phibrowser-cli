@@ -31,9 +31,16 @@ const AGENT_SKILL_DIRS = [
   ['.claude', 'skills'],
   ['.codex', 'skills'],
   ['.cursor', 'skills'],
-  ['.openclaw', 'skills'],
   ['.hermes', 'skills'],
+  ['.openclaw', 'skills'],
   ['.pi', 'agent', 'skills'],
+  ['.grok', 'skills'],
+  ['.gemini', 'skills'],
+  ['.copilot', 'skills'],
+  ['.config', 'opencode', 'skills'],
+  ['.qwen', 'skills'],
+  ['.codebuddy', 'skills'],
+  ['.agents', 'skills'],
 ]
 
 const skillLib = (skillRoot) => join(skillRoot, 'scripts', 'lib')

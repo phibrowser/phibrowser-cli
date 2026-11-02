@@ -29,16 +29,16 @@ flags into a binding:
 
 | Context | Binds | Commands |
 |---|---|---|
-| `page` | an **agent Space** (default), or a **user Space** with `-U`, or nothing when a `--space`-capable command is given `--space` | open, goto, click, snapshot, cookies, tab groups, downloads, … |
-| `agent` | the session's **agent Space** only (create-or-bind; `close`/`status`/`messages` bind only if it already exists) | close, ping, narrate, handoff, takeover, watch, status, messages |
+| `page` | an **agent Space** (default), a **user Space** with `-U`/`--window-id`, a **shadow window** with `--shadow`, or nothing when a `--space`-capable command is given `--space` | open, goto, click, snapshot, cookies, tab groups, downloads, … |
+| `agent` | the session's **agent Space**, or its shadow window with `--shadow` (create-or-bind; `close`/`status`/`messages` bind only if it already exists) | close, ping, narrate, handoff, takeover, watch, status, messages |
 | `app` | **nothing** — management operates the user's browser app-wide | sessions, profiles, space-*, bookmark-*, rules, pins, focus, … |
 | `none` | nothing (runs before helpers load) | install |
 
-So there are exactly three places work can happen — an **agent Space** (hidden,
-the default; `--persistent` makes it a lasting one), a **user Space** (the
-user's real window, via `-U`), and the **app-level** browser-data surface (no
-window) — with persistent being a property of an agent Space, not a fourth
-kind.
+So there are exactly four places work can happen — an **agent Space** (hidden,
+the default; `--persistent` makes it a lasting one), a **shadow window**
+(invisible background work, via `--shadow`), a **user Space** (the user's real
+window, via `-U`), and the **app-level** browser-data surface (no window) —
+with persistent being a property of an agent Space, not a fifth kind.
 
 The CLI is a thin command surface over the phi-browser skill's helper engine —
 it resolves and imports `helpers.mjs` at runtime rather than vendoring it, so
@@ -55,8 +55,9 @@ to. Resolution order:
    `Contents/Resources/phi-browser-skill`. This is what makes `npm i -g` and
    `brew install` work with nothing else set up. Canary is probed first to
    match the order the engine itself probes for the app socket.
-5. installed skills: `~/.claude`, `~/.codex`, `~/.cursor`, `~/.openclaw`,
-   `~/.hermes`, `~/.pi/agent`
+5. installed skills: `~/.claude`, `~/.codex`, `~/.cursor`, `~/.hermes`,
+   `~/.openclaw`, `~/.pi/agent`, `~/.grok`, `~/.gemini`, `~/.copilot`,
+   `~/.config/opencode`, `~/.qwen`, `~/.codebuddy`, `~/.agents`
 
 State that persists between invocations lives in the browser or on disk, not
 in the CLI: the Space keeps its tabs (ephemeral TTL ~30 min between rounds —
@@ -99,7 +100,10 @@ Releasing (publish + Homebrew tap sync) is documented in
 - Phi Browser **2.4.0+** installed — the CLI is a client, not a browser, and
   loads the engine that ships in the app bundle. Run it without one and it
   offers to install it for you (see [Exit codes](#exit-codes)); Canary is
-  exempt from the version floor
+  exempt from the version floor. Some commands need newer builds and say so
+  when they meet an older one: shadow windows, `article`, `drag`'s humanized
+  glide and `challenge --wait` arrive in 2.7.0, `--window-id` in 2.9.0, `--theme`
+  in 2.12.0
 - Nothing else. Phi Browser does not have to be running or configured: the
   CLI starts it when no browser is up, and Phi answers whether or not agent
   control is switched on — the consent prompt it raises turns that on as part
@@ -135,6 +139,40 @@ channel — a running stable Phi never answers for a canary round. It rides the
 same exclusive pin `$PHIBROWSER_APP` gives one bundle, so combining the flag
 with a `$PHIBROWSER_APP` that names a stable bundle is refused.
 
+### Shadow windows — `--shadow`
+
+`--shadow` runs a session in a window the user **cannot see**: a real browser
+window on a real profile, off-screen, with no pip in the switcher, no Agent
+Transcript, and no handoff. Page commands work exactly as they do in an agent
+Space.
+
+```bash
+phi -s prices --shadow open https://example.com/pricing
+phi -s prices --shadow snapshot --text
+phi -s prices --shadow close          # always: nothing else shows this window
+```
+
+An agent Space stays the default and the right answer whenever a task might
+need a human — a login, a captcha, a payment — because nobody can step in here.
+Use `--shadow` only when asked for work that stays out of the user's way, and
+if a human step turns up mid-run, close the window and report what is needed.
+
+- Repeat `--shadow` on every command: without it the same session name binds a
+  visible agent Space, just as dropping `-U` leaves the user Space.
+- `--incognito` (with `--shadow`) gives the window a fresh off-the-record
+  session: no cookies or logins come in, nothing persists, and it is destroyed
+  with the window. Repeat it too — a name's incognito-ness is fixed when the
+  window is created, and asking for the other kind fails
+  `shadow_incognito_mismatch`. `close` is the exception: it works either way.
+- `handoff`, `takeover`, `watch`, `status`, `messages` and `screenshot --window`
+  refuse with an explanation, because each means the task has outgrown a shadow
+  window. `narrate` is a quiet no-op, so report results in your own output.
+- `sessions` lists shadow windows and `close-all` closes them, since neither the
+  switcher nor the user can reach one. An abandoned window otherwise lingers on
+  the same keep-alive clock as an ephemeral Space, burning a renderer.
+- `--persistent` and `-U` do not combine with it. It needs the same "operate your
+  Spaces" setting as browser management: exit **4** when that is off.
+
 ## Output conventions
 
 - After **navigation** (`open`, `goto`, `back`, `tab-select`, …) the CLI
@@ -149,6 +187,9 @@ with a `$PHIBROWSER_APP` that names a stable bundle is refused.
 - After **actions** (`click`, `fill`, `press`, …) it prints only what changed
   (`+` added / `-` removed / `~` changed). An action that navigated prints the
   full new-page map instead.
+- `fill` and `select` say `(unverified: …)` when a field accepted the value but
+  reformatted it (a phone mask, say) — read it back if exactness matters. A
+  field that rejects the value outright is a failure, not a note.
 - `--quiet` suppresses the summary; `--json` emits raw JSON; `--max N` caps
   printed elements (default 150).
 - Page-derived text comes wrapped in `UNTRUSTED PAGE CONTENT` markers — data,
@@ -159,8 +200,19 @@ with a `$PHIBROWSER_APP` that names a stable bundle is refused.
 `click`, `hover`, `fill`, `upload`, `wait --element`, `snapshot --within`
 accept: `@12` (ref), `loc=css:#email` (or bare `css:` / `href:` / `role:` /
 `xpath:` — the CLI normalizes), raw CSS selectors, `xpath=//button`, or
-`"x,y"` viewport coordinates (click/hover only). Prefer refs and locs; they
+`"x,y"` viewport coordinates (click/hover/drag only). Prefer refs and locs; they
 survive layout shifts and auto-scroll into view.
+
+Element actions reach only what a person's cursor could: a target that is
+covered, disabled, or outside the viewport is refused with `target is not
+human-operable` rather than reached through page JS. So is input while a
+blocking cookie banner or an unresolved Cloudflare check holds the page — the
+error says which, and how to clear it.
+
+`drag` presses, glides with the button held, and releases, which suits sliders,
+reorder lists and canvas gestures. Both ends must be on screen together, so
+`scroll` first if needed. `--steps N` swaps the humanized glide for a straight
+line of N raw moves.
 
 ## Commands
 
@@ -171,12 +223,32 @@ per-command flags.
 |---|---|
 | Session | `open` `close` `close-all` `sessions` `profiles` `status` `ping` `narrate` `messages` `handoff` `takeover` `watch` `run-code` `script` `install skill\|browser` |
 | Navigation | `goto` `reload` `back` `forward` `tabs` `tab-new` `tab-select` `tab-close` |
-| Observe | `snapshot` (`--filename`) `find` `screenshot` `pdf` `archive` `eval` (`--on`) `console` `requests` `info` `challenge` `highlight` |
+| Observe | `snapshot` (`--filename`) `find` `article` `article-save` `screenshot` `pdf` `archive` `eval` (`--on`) `console` `requests` `info` `challenge` (`--wait`) `highlight` |
 | Act | `click` `hover` `fill` `type` `press` `check` `uncheck` `select` `drag` `scroll` `upload` `dialog` `accept-cookies` `viewport` `keydown` `keyup` `mousemove` `mousedown` `mouseup` `mousewheel` |
 | Wait | `wait` (seconds, `--load`, `--idle`, `--element`, `--fn`) |
 | Storage | `cookies` `cookie-get` `cookie-set` `cookie-delete` `cookie-clear` `localstorage-*` `sessionstorage-*` `state-save` `state-load` |
 | Credentials | `cred-status` `cred-fill` `cred-run` `cred-get` |
 | Manage | `space-list/create/update/delete/activate/open/tabs` `focus` `profile-create/rename` `rules` `rule-add/delete` `pins` `pin-add/remove` `bookmarks` `bookmark-add/folder/update/move/remove` `group-*` `ungroup` `split-*` `downloads` `download` `user-space` |
+
+### Reading an article
+
+When what you want is an article — a blog post, a news story, a docs page, a
+PDF — reach for `article` before `snapshot --text`. It runs Phi's Reader View
+pipeline, so the nav, comments and related-post rails are already gone, and it
+is the only way to read a PDF.
+
+```bash
+phi article                # verdict header, then the article's HTML
+phi article --meta         # just the verdict: title, rung, coverage
+phi article-save post.html # one standalone file, images inlined
+```
+
+The header names how it was extracted (`rule`, `readability`, `structural`, or
+`accessibility` for a PDF) and how much of the page survived. On a page that is
+not an article it fails with `no_article_detected` or `below_coverage_floor`;
+that is an honest answer, so use `snapshot --text` rather than retrying.
+`archive` remains the way to keep the whole original page. Both article commands
+need an agent Space or shadow window, not `-U`.
 
 ### Browser management
 
@@ -190,10 +262,17 @@ management surface. Notes:
   unaffected.
 - `space-delete` and `bookmark-remove` (on a folder) cascade and require
   `--yes`.
+- `space-create`/`space-update` take `--theme` (`pure`, `mist`, `mint`, `aqua`,
+  `iris`, `petal`, `coral`, `amber`) or `--color '#RRGGBB'`, which snaps to the
+  nearest theme — the output reports the theme that landed. `--icon` takes
+  `phi:phi-icon-<name>`, a catalog name (`mail`), `emoji:<hex>`, or the emoji.
+- `space-open` reaches a Space with no open window by opening one: surfaced by
+  default, behind the user's windows with `--background`.
 - `group-*` / `split-*` / `downloads` target the **session's Space window**
   by default; `--space <name|id>` targets a user Space's open window instead.
   For a user Space, get tab references from `space-tabs <space>` (the integer
-  `tabId` works as a target).
+  `tabId` works as a target). It lists the window's full inventory, with open
+  pinned and bookmark tabs tagged as such.
 - `user-space <space>` binds a piped heredoc script to a user Space so the
   page helpers (`observe`, `click`, `goto`, …) drive its **real, visible**
   window — the CLI counterpart of the skill's `enterContext({kind:'user'})`.
@@ -222,6 +301,17 @@ Space, and re-attaching to that Space's selected tab each invocation. Notes:
   is the user's own). Same "operate your Spaces" gate → exit 4 when off.
 - Everything happens in the user's visible window; expect their clicks and
   yours to interleave — act in small steps and re-observe.
+- Driving stays out of the way: binding and `tab-select` never change which tab
+  is selected on screen or raise the window, and a Space with no open window
+  opens behind the user's. `open` and `tab-new` are the deliberate exception —
+  a new tab appears in the strip.
+- `screenshot` times out on a tab the user does not have selected, because a
+  background tab in a user window does not paint. Everything else works there;
+  screenshot the selected tab, or do visual checks in an agent Space.
+- When a Space is open in several windows, the key window answers. `--window-id
+  <id>` pins one (ids from `space-list`), works without `-U`, and also applies to
+  `space-open`, `space-tabs` and `user-space`. It is `--window-id` because
+  `screenshot --window` already means something else.
 
 `eval --on <target>` runs the expression with a target element as `this`
 (the element-scoped `eval`). `run-code` pipes a phi-browser heredoc script
@@ -260,13 +350,30 @@ phi install browser --canary     # Phi Canary, from the canary channel
 `references/`, `scripts/` and helper library — into each agent's
 `skills/phi-browser`. A link rather than a copy is the point: the skill then
 tracks the Phi Browser build it came from, so updating the app moves every
-agent forward at once. It is what Phi's **Settings ▸ General ▸ Developer ▸
-"Install the phi-browser skill"** buttons do, without leaving the terminal.
+agent forward at once. It is what Phi's **Settings ▸ Developer ▸ "Install the
+phi-browser skill" ▸ Add skill to…** menu does, without leaving the terminal.
 
-Agents: `claude` (`~/.claude/skills`), `codex`, `cursor`, `openclaw`, `hermes`,
-`pi` (`~/.pi/agent/skills`). Name them explicitly, or name none and every agent
-already present on the machine gets the link — so this never litters `~` with
-directories for tools you don't use. **Pi** also gets a companion extension at
+| Agent | Skills folder |
+|---|---|
+| `claude` | `~/.claude/skills` |
+| `codex` | `~/.codex/skills` |
+| `cursor` | `~/.cursor/skills` |
+| `hermes` | `~/.hermes/skills` |
+| `openclaw` | `~/.openclaw/skills` |
+| `pi` | `~/.pi/agent/skills` |
+| `grok`, `grokbot` | `~/.grok/skills` (one link serves both) |
+| `antigravity` | `~/.gemini/skills` (shared with Gemini CLI) |
+| `copilot` | `~/.copilot/skills` |
+| `opencode` | `~/.config/opencode/skills` |
+| `qwen` | `~/.qwen/skills` |
+| `codebuddy` | `~/.codebuddy/skills` |
+| `agents` | `~/.agents/skills` (read by Deep Code, Kimi Code, Cline, DeepSeek Harness) |
+
+Name them explicitly, or name none and every agent already present on the
+machine gets the link — so this never litters `~` with directories for tools
+you don't use. Every agent can drive Phi, but only the first six get the session
+mirror: under the rest, Agent Transcript shows the browser steps and not the
+agent's own conversation. **Pi** also gets a companion extension at
 `~/.pi/agent/extensions/phi-browser`, which is what lets an Agent Transcript
 command wake a live Pi session; run `/reload` in an open Pi session afterwards.
 
@@ -340,8 +447,9 @@ Full semantics live in the engine's `references/credentials.md`.
 ### Config file
 
 Optional `~/.phibrowser/config.json`, overridden by `./.phibrowser/config.json`.
-Keys: `session`, `profile`, `persistent`, `quiet`, `json`, `max`, `lib`.
-Flags and env vars always win over config.
+Keys: `session`, `profile`, `persistent`, `quiet`, `json`, `max`, `lib`,
+`canary`. Flags and env vars always win over config. `--shadow` has no config
+key on purpose: running invisibly is a per-task decision.
 
 ### Relationship to playwright-cli
 
@@ -360,8 +468,9 @@ throwaway browser:
   `tracing-*`, `video-*`. Ask if you need any of these — `route` and tracing
   are feasible via CDP Fetch/Tracing domains.
 - **Beyond playwright-cli**: the co-working surface (`handoff`/`takeover`/
-  `watch`, `narrate`/`messages`), `challenge` detection, `archive` (MHTML),
-  `screenshot --window`, logged-in session reuse.
+  `watch`, `narrate`/`messages`), shadow windows, `article` (Reader View),
+  `challenge` detection, `archive` (MHTML), `screenshot --window`, logged-in
+  session reuse.
 
 ## Dialogs
 
@@ -381,11 +490,11 @@ handles it.
 `npm test` (or `node test/cli.test.mjs`) runs an end-to-end suite against the
 running browser: it exercises every command against a self-contained fixture,
 asserts by reading DOM state back through `eval`, smoke-checks capture/flaky
-commands, and cleans up every Space and management artifact it creates.
-Interactive commands (`handoff`/`takeover`/`watch`), profile creation
+commands, and cleans up every Space, shadow window and management artifact it
+creates. Interactive commands (`handoff`/`takeover`/`watch`), profile creation
 (undeletable), and modal `dialog` handling (see above) are skipped with a
-reason. Requires the "operate your Spaces" toggle for the management-group
-assertions; without it, that group is skipped.
+reason. Requires the "operate your Spaces" toggle for the management-group and
+shadow-window assertions; without it, those groups are skipped.
 
 ## Co-working rules (inherited from the skill)
 
@@ -394,15 +503,19 @@ assertions; without it, that group is skipped.
   until hand-back; never retry or `takeover` without the user's say-so.
 - Logins, captchas, 2FA, and consequential choices are the user's:
   `phi handoff "Sign in, then hand back"` (add `--wait` to block).
-- Cloudflare challenges are never solved by the agent — `phi challenge`
-  detects one; hand off.
+- Cloudflare challenges are never solved by the agent. `phi challenge` detects
+  one and `phi challenge --wait` gives a managed check its one bounded chance to
+  clear: at most two short passive rechecks per encounter, shared with the check
+  page input runs by itself, with no click, reload or navigation. If it remains,
+  hand off and do not retry. A hard block (`kind: "blocked"`) has nothing to
+  solve, so report it.
 - `messages` surfaces commands the user typed into Phi's Agent Transcript
   console; honor them before continuing (`open` warns when any are pending).
 
 ## Exit codes
 
 `0` ok · `1` command failed · `2` usage · `3` user holds control ·
-`4` browser-management disabled · `5` no usable Phi Browser ·
+`4` browser management / shadow windows disabled · `5` no usable Phi Browser ·
 `6` credential request refused
 
 Exit **6** means the vault did not serve and repeating the call cannot change

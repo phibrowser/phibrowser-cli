@@ -34,6 +34,7 @@ const FIXTURE_HTML = `<!doctype html><meta charset=utf-8><title>phib-selftest</t
 <p>MARKERTEXT the quick brown fox jumps over 12345 lazy dogs</p>
 <a id=lnk href="https://example.com/">golink</a>
 <input id=txt placeholder="type here">
+<input id=mask onkeydown="event.preventDefault()" oninput="this.value=this.value.replace(/\\D/g,'').replace(/^(\\d{3})(\\d)/,'($1) $2')">
 <input type=checkbox id=cb>
 <select id=sel><option value=a>Alpha</option><option value=b>Beta</option></select>
 <input type=range id=rng min=0 max=100 value=50 style="width:400px;display:block">
@@ -206,6 +207,39 @@ async function main() {
       assert(existsSync(f) && statSync(f).size > 0, 'output file missing/empty')
     })
   }
+  await T('challenge --wait on a clean page reports cleared', async () => {
+    const r = assertOk(await run(['-s', S, 'challenge', '--wait']), 'challenge --wait')
+    assertHas(clean(r), '"cleared": true', 'challenge --wait')
+  })
+
+  // ===== Reader ============================================================
+  // Extraction depends on the reader's heuristics, so these are smoke checks;
+  // the wiring they prove is the flags, the markers and the refusal's hint.
+  console.log('\n# Reader')
+  await SMOKE('article refuses a non-article, naming the fallback', async () => {
+    const r = await run(['-s', S, 'article', '--meta'])
+    assert(r.code === 1, `expected exit 1 on a non-article, got ${r.code}`)
+    assertHas(clean(r), 'snapshot --text', 'fallback hint')
+  })
+  const R = 'clitest-reader'
+  const ARTICLE = 'data:text/html,' + encodeURIComponent(
+    '<!doctype html><meta charset=utf-8><title>phib-article</title><article><h1>phib-article</h1>' +
+    Array.from({ length: 12 }, (_, i) => `<p>Paragraph ${i} of a plainly written article, long ` +
+      'enough for the reader to accept it as the main content of this page and not as ' +
+      'a stray notice sitting beside something else that matters more than it does.</p>').join('') +
+    '</article>')
+  await SMOKE('article prints its verdict inside the untrusted markers', async () => {
+    assertOk(await run(['-s', R, 'open', ARTICLE, '--no-cookies']), 'open article')
+    const r = assertOk(await run(['-s', R, 'article']), 'article')
+    assertHas(clean(r), 'BEGIN UNTRUSTED PAGE CONTENT', 'markers')
+    assertHas(clean(r), 'phib-article', 'title')
+  })
+  await SMOKE('article-save writes a standalone file', async () => {
+    const f = join(TMP, 'article.html')
+    assertOk(await run(['-s', R, 'article-save', f]), 'article-save')
+    assert(existsSync(f) && statSync(f).size > 0, 'output file missing/empty')
+  })
+  await run(['-s', R, 'close'])
 
   // ===== Actions (assert via DOM readback) =================================
   console.log('\n# Act')
@@ -220,6 +254,11 @@ async function main() {
   await T('fill --submit', async () => {
     assertOk(await run(['-s', S, 'fill', 'css:#q', 'x', '--submit']), 'fill --submit')
     assertHas(await ev("document.getElementById('out').textContent"), 'submitted', 'form submit')
+  })
+  await SMOKE('fill reports a value the field reformatted', async () => {
+    const r = assertOk(await run(['-s', S, 'fill', 'css:#mask', '5551234', '--quiet']), 'fill mask')
+    assertHas(await ev("document.getElementById('mask').value"), '(555) 1234', 'mask reformatted')
+    assertHas(clean(r), 'unverified', 'unverified note')
   })
   await T('type', async () => {
     assertOk(await run(['-s', S, 'click', 'css:#ta']))
@@ -249,6 +288,15 @@ async function main() {
     assertOk(await run(['-s', S, 'drag', from, to]), 'drag')
     const val = Number(await ev("document.getElementById('rng').value"))
     assert(val > 50, `slider did not increase (value=${val})`)
+  })
+  await T('drag --steps (raw straight line)', async () => {
+    const rect = JSON.parse(await ev("(function(){var r=document.getElementById('rng').getBoundingClientRect();return JSON.stringify({x:Math.round(r.left),y:Math.round(r.top+r.height/2),w:Math.round(r.width)})})()"))
+    const before = Number(await ev("document.getElementById('rng').value"))
+    const from = `${rect.x + Math.round((rect.w * before) / 100)},${rect.y}`
+    const to = `${rect.x + 4},${rect.y}`
+    assertOk(await run(['-s', S, 'drag', from, to, '--steps', '8']), 'drag --steps')
+    const val = Number(await ev("document.getElementById('rng').value"))
+    assert(val < before, `slider did not decrease (${before} -> ${val})`)
   })
   await T('highlight / --hide', async () => {
     assertOk(await run(['-s', S, 'highlight', 'css:#sel']), 'highlight')
@@ -482,6 +530,25 @@ async function main() {
     assert(agent.code === 2, `expected usage exit 2, got ${agent.code}`)
     assertHas(clean(agent), 'unknown agent', 'agent refusal')
   })
+  await T('install skill reaches the skill-only agents', async () => {
+    const home = join(TMP, 'fakehome4')
+    mkdirSync(join(home, '.config', 'opencode'), { recursive: true })
+    assertOk(await run(['install', 'skill', 'opencode'], { env: { HOME: home } }), 'opencode')
+    assert(lstatSync(join(home, '.config', 'opencode', 'skills', 'phi-browser')).isSymbolicLink(),
+      'opencode not linked')
+  })
+  await T('install skill reports a folder two agents share once', async () => {
+    const home = join(TMP, 'fakehome5')
+    const r = assertOk(await run(['install', 'skill', 'grok', 'grokbot'], { env: { HOME: home } }), 'grok')
+    assert(clean(r).split('.grok/skills/phi-browser').length === 2, 'expected one row for the shared link')
+  })
+  await T('context flags that contradict each other are usage errors', async () => {
+    for (const args of [['--incognito', 'tabs'], ['--shadow', '-U', 'Work', 'tabs'],
+                        ['--shadow', '--window-id', '1', 'tabs'], ['--shadow', '--persistent', 'tabs']]) {
+      const r = await run(args)
+      assert(r.code === 2, `${args.join(' ')}: expected usage exit 2, got ${r.code}`)
+    }
+  })
 
   SKIP('handoff', 'interactive — hands control to the user')
   SKIP('takeover', 'interactive — only valid after a handoff')
@@ -493,7 +560,7 @@ async function main() {
   if (mgmtProbe.code === 4 || /user_space_operations_disabled/.test(mgmtProbe.err)) {
     for (const n of ['space-list/create/update/delete/activate/open/tabs', 'focus', 'rules/rule-add/rule-delete',
                      'pins/pin-add/pin-remove', 'bookmarks + bookmark-*', 'group-* + ungroup',
-                     'split-*', 'downloads', 'user-space + -U flag']) {
+                     'split-*', 'downloads', 'user-space + -U flag + --window-id', '--shadow']) {
       SKIP(n, 'browser-management disabled (Settings ▸ Developer ▸ Allow agents to operate your Spaces)')
     }
     SKIP('profile-create', 'creates an undeletable profile'); SKIP('profile-rename', 'needs a throwaway profile')
@@ -510,6 +577,12 @@ async function main() {
       })
       if (spaceId) {
         await T('space-update', async () => assertOk(await run(['space-update', spaceId, '--name', 'phib-selftest-renamed']), 'space-update'))
+        await T('space-update --theme reports what landed', async () => {
+          const r = assertOk(await run(['space-update', spaceId, '--theme', 'iris', '--json']), '--theme')
+          assert(JSON.parse(r.out).themeId === 'iris', `expected iris, got ${r.out.trim()}`)
+          const bad = await run(['space-update', spaceId, '--theme', 'nosuchtheme'])
+          assert(bad.code === 1, `expected exit 1 for an unknown theme, got ${bad.code}`)
+        })
         await SMOKE('space-activate', async () => assertOk(await run(['space-activate', spaceId])))
         await T('space-open', async () => assertHas(clean(assertOk(await run(['space-open', spaceId, 'https://example.com']))), 'ok', 'space-open'))
         await T('space-tabs', async () => assertHas(clean(assertOk(await run(['space-tabs', spaceId]))), 'tabId=', 'space-tabs'))
@@ -593,6 +666,52 @@ async function main() {
           const r = assertOk(await run(['-U', spaceId, 'eval', "document.title"]), '-U eval')
           assertHas(clean(r), 'phib-selftest', '-U flag')
         })
+        await T('--window-id pins the window, and refuses one not showing the Space', async () => {
+          const spaces = JSON.parse(assertOk(await run(['space-list', '--json'])).out)
+          const windowId = spaces.find((s) => s.spaceId === spaceId)?.windowIds?.[0]
+          assert(windowId, 'Space has no open window to pin')
+          const r = assertOk(await run(['-U', spaceId, '--window-id', String(windowId), 'eval', 'document.title']), 'pinned')
+          assertHas(clean(r), 'phib-selftest', 'pinned eval')
+          const bad = await run(['-U', spaceId, '--window-id', '999999', 'tabs'])
+          assert(bad.code === 1, `expected exit 1 for a wrong window, got ${bad.code}`)
+        })
+      }
+
+      // Shadow windows share management's gate. The user cannot see or close
+      // one, so everything here is closed again in the finally below.
+      const SH = 'clitest-shadow', SHI = 'clitest-shadow-incognito'
+      try {
+        await T('--shadow open + eval', async () => {
+          assertOk(await run(['-s', SH, '--shadow', 'open', FIXTURE, '--no-cookies']), '--shadow open')
+          assertHas(clean(assertOk(await run(['-s', SH, '--shadow', 'eval', 'document.title']))), 'phib-selftest', 'shadow page')
+        })
+        await T('sessions lists the shadow window', async () => {
+          const rows = JSON.parse(assertOk(await run(['sessions', '--json'])).out)
+          assert(rows.some((s) => s.taskId === SH && s.shadow === true), 'shadow window not listed')
+        })
+        await T('--shadow refuses what needs a human', async () => {
+          const r = await run(['-s', SH, '--shadow', 'status'])
+          assert(r.code === 1, `expected exit 1, got ${r.code}`)
+          assertHas(clean(r), 'shadow window', 'refusal')
+        })
+        await T('--shadow run-code binds the shadow window', async () => {
+          const r = assertOk(await run(['-s', SH, '--shadow', 'run-code'], { input: "cliLog('KIND:' + contextKind())" }), 'run-code')
+          assertHas(clean(r), 'KIND:shadow', 'bound kind')
+        })
+        await T('--shadow close', async () => {
+          assertHas(clean(assertOk(await run(['-s', SH, '--shadow', 'close']))), 'shadow window', 'close')
+          const rows = JSON.parse(assertOk(await run(['sessions', '--json'])).out)
+          assert(!rows.some((s) => s.taskId === SH), 'still listed after close')
+        })
+        await SMOKE('--shadow --incognito closes without repeating --incognito', async () => {
+          assertOk(await run(['-s', SHI, '--shadow', '--incognito', 'open', FIXTURE, '--no-cookies']), 'open')
+          const rows = JSON.parse(assertOk(await run(['sessions', '--json'])).out)
+          assert(rows.find((s) => s.taskId === SHI)?.incognito === true, 'not incognito')
+          assertOk(await run(['-s', SHI, '--shadow', 'close']), 'close')
+        })
+      } finally {
+        await run(['-s', SH, '--shadow', 'close'])
+        await run(['-s', SHI, '--shadow', 'close'])
       }
     } finally {
       // Management cleanup — best effort, never throws.

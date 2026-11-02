@@ -5,8 +5,9 @@
 //
 // Architecture: Phi Browser itself is the daemon. Every invocation is one
 // "round": connect over CDP, bind an execution context via the skill's
-// enterContext() (an agent Space by default, or a user Space with -U), run
-// one command, print a compact result, dispose. Each command declares a
+// enterContext() (an agent Space by default, a user Space with -U, or an
+// invisible shadow window with --shadow), run one command, print a compact
+// result, dispose. Each command declares a
 // single `context` field ('page' | 'agent' | 'app' | 'none') and one
 // resolver (resolveContext) turns it plus the flags into the binding.
 // Element refs (@N) are CDP backendNodeIds — stable for the element's
@@ -30,7 +31,7 @@ import {
   loadHelpers, MIN_APP_VERSION, resolveLibDir, SETTINGS_DEEPLINK,
 } from './resolve-lib.mjs'
 import {
-  renderBookmarks, renderCredential, renderCredentialStatus, renderDownloads,
+  renderArticle, renderBookmarks, renderCredential, renderCredentialStatus, renderDownloads,
   renderJson, renderObserve, renderPinnedTabs, renderProfiles, renderSpaces,
   renderSpaceTabs, renderSplitViews, renderTabGroups, renderTabs, renderUrlRules,
 } from './render.mjs'
@@ -66,6 +67,10 @@ function loadConfig() {
 const GLOBAL_FLAGS = {
   session: { type: 'str', short: 's', desc: 'session name = agent Space task id (env: PHIBROWSER_SESSION)' },
   'user-space': { type: 'str', short: 'U', desc: "drive a USER Space's real window instead of the agent Space (name or id)" },
+  // Not --window: `screenshot --window` already means "capture the chrome".
+  'window-id': { type: 'num', desc: "pin a USER Space's window when it is open in several (ids: space-list); works without -U" },
+  shadow: { type: 'bool', desc: 'run in an invisible shadow window — no pip, watching or handoff; only when asked for background work' },
+  incognito: { type: 'bool', desc: 'with --shadow: a fresh off-the-record session, destroyed with the window' },
   profile: { type: 'str', desc: 'browser profile for a newly created Space' },
   persistent: { type: 'bool', desc: 'create the Space as a permanent workspace' },
   canary: { type: 'bool', desc: 'target Phi Canary — drive/launch it, install from the canary channel (env: PHIBROWSER_CANARY)' },
@@ -135,6 +140,73 @@ function requireArg(args, i, what) {
   return args[i]
 }
 
+// The CLI supports every build from MIN_APP_VERSION up, and the engine is the
+// build's own: a helper newer than that build is simply absent. Say which
+// version brings it, rather than letting the call die as a TypeError.
+function requireHelper(h, helper, since, what = helper) {
+  if (typeof h[helper] !== 'function') {
+    throw new Error(`${what} needs Phi Browser ${since}+ — this build's engine predates it`)
+  }
+}
+
+// fillInput reports a field that reformatted the value (a phone mask) as
+// verified:false rather than failing, so a bare "ok" would overstate it.
+const unverifiedNote = (r) => (r?.verified === false ? ` (unverified: ${r.note})` : '')
+
+// Where a named session runs, as the spec enterContext() takes. An explicit
+// --shadow swaps the surface, not the naming: the session is still the task.
+function taskSpec(flags, session) {
+  if (flags.shadow) {
+    return {
+      kind: 'shadow', name: session,
+      ...(flags.profile ? { profile: flags.profile } : {}),
+      ...(flags.incognito ? { incognito: true } : {}),
+    }
+  }
+  return {
+    kind: 'agent', name: session,
+    ...(flags.profile ? { profile: flags.profile } : {}),
+    ...(flags.persistent ? { persistent: true } : {}),
+  }
+}
+
+// This driver's shadow windows. Empty on an engine that predates them and with
+// "operate your Spaces" off, where none can exist: listing sessions must keep
+// working in both, so the gate only fires on a command that needs a window.
+async function shadowWindows(h) {
+  if (typeof h.listShadowWindows !== 'function') return []
+  try { return await h.listShadowWindows() } catch { return [] }
+}
+
+// The reader runs against a task's tab, so a user Space has no way in — left
+// alone that surfaces as the engine's "No agent space selected".
+function requireTaskContext(ctx, command) {
+  if (ctx.context?.kind === 'user') {
+    throw new Error(`${command} works in an agent Space or shadow window, not a user Space — ` +
+      `drop -U, or read this page with \`${PROG} -U … snapshot --text\``)
+  }
+}
+
+// no_article_detected / below_coverage_floor are honest answers on a homepage
+// or an app screen, and retrying cannot change them — name the way forward.
+async function readArticle(fn) {
+  try {
+    return await fn()
+  } catch (err) {
+    const msg = err?.message || String(err)
+    if (/no_article_detected|below_coverage_floor/.test(msg)) {
+      throw new Error(`${msg} — this page is not an article; read it with \`${PROG} snapshot --text\``)
+    }
+    // Extraction runs in Phi's reader extension, and an unloaded one answers
+    // with silence (a dev build without its extensions, say) — not the page's fault.
+    if (/transport_unavailable|agentSpace\.reader\w+: timed out/.test(msg)) {
+      throw new Error(`${msg} — Phi's reader extension did not answer, so nothing was extracted; ` +
+        `read the page with \`${PROG} snapshot --text\``)
+    }
+    throw err
+  }
+}
+
 // Tab args accept a 1-based index from `tabs` output or a raw targetId.
 async function resolveTab(ctx, arg) {
   if (arg === undefined) return undefined
@@ -199,23 +271,37 @@ cmd({
   },
   context: 'agent', create: false,
   async run(ctx) {
-    if (!ctx.task) { ctx.print(`(no active Space for session "${ctx.session}")`); return }
+    if (!ctx.task) {
+      ctx.print(`(no active ${ctx.flags.shadow ? 'shadow window' : 'Space'} for session "${ctx.session}")`)
+      return
+    }
+    const what = ctx.context.kind === 'shadow' ? 'shadow window' : 'Space'
     await ctx.h.complete({ success: !ctx.flags.fail, message: ctx.flags.message, immediate: true })
-    ctx.print(ctx.flags.json ? renderJson({ ok: true, closed: ctx.session }) : `ok: Space "${ctx.session}" closed`)
+    ctx.print(ctx.flags.json ? renderJson({ ok: true, closed: ctx.session }) : `ok: ${what} "${ctx.session}" closed`)
   },
 })
 
 cmd({
   name: 'sessions', group: 'Session', sig: 'sessions',
-  desc: 'List active agent Spaces (sessions)',
+  desc: 'List active agent Spaces and shadow windows (sessions)',
   context: 'app',
   async run(ctx) {
     const tasks = await ctx.h.listAgentSpaces()
-    if (ctx.flags.json) { ctx.print(renderJson(tasks)); return }
-    if (!tasks.length) { ctx.print('(no active agent Spaces)'); return }
+    // Listed here because nothing else shows them: a shadow window has no pip
+    // in the switcher, so a forgotten one would otherwise be unfindable.
+    const shadows = await shadowWindows(ctx.h)
+    if (ctx.flags.json) {
+      ctx.print(renderJson([...tasks, ...shadows.map((s) => ({ ...s, shadow: true }))]))
+      return
+    }
+    if (!tasks.length && !shadows.length) { ctx.print('(no active agent Spaces)'); return }
     for (const t of tasks) {
       const cur = t.taskId === ctx.session ? '*' : ' '
       ctx.print(`${cur}${t.taskId}  status=${t.status ?? '?'} ownership=${t.ownership ?? '?'}${t.persistent ? ' persistent' : ''}`)
+    }
+    for (const s of shadows) {
+      const cur = s.taskId === ctx.session ? '*' : ' '
+      ctx.print(`${cur}${s.taskId}  shadow window=${s.windowId ?? '?'}${s.incognito ? ' incognito' : ''}`)
     }
   },
 })
@@ -563,12 +649,63 @@ cmd({
 })
 
 cmd({
-  name: 'challenge', group: 'Observe', sig: 'challenge',
-  desc: 'Detect a Cloudflare-style challenge on the current page',
+  name: 'challenge', group: 'Observe', sig: 'challenge [--wait]',
+  desc: 'Detect a Cloudflare-style challenge; --wait gives a managed check time to clear',
+  flags: { wait: { type: 'bool', desc: 'at most two short passive rechecks per encounter — no click, reload or navigation' } },
   context: 'page',
   async run(ctx) {
+    if (ctx.flags.wait) {
+      requireHelper(ctx.h, 'waitForChallengeClearance', '2.7.0', 'challenge --wait')
+      const r = await ctx.h.waitForChallengeClearance()
+      ctx.print(renderJson(r))
+      // Output first, then the verdict, so `challenge --wait && …` reads true
+      // only when the page really is through.
+      if (!r.cleared) {
+        throw new Error(r.challenge?.kind === 'blocked'
+          ? 'hard block — nothing here to solve; report it and do not retry the navigation'
+          : `challenge remains — hand it over: \`${PROG} handoff "Complete the verification, then hand back"\``)
+      }
+      return
+    }
     const r = await ctx.h.detectChallenge()
     ctx.print(r ? renderJson(r) : '(no challenge detected)')
+  },
+})
+
+cmd({
+  name: 'article', group: 'Observe', sig: 'article [--meta] [--complete]',
+  desc: "The page distilled to its article (Phi's Reader View); refuses non-articles",
+  flags: {
+    meta: { type: 'bool', desc: 'only the verdict (title, rung, coverage) — no article markup' },
+    complete: { type: 'bool', desc: 'wait for the whole of a long PDF, not its first pages' },
+  },
+  context: 'page',
+  async run(ctx) {
+    requireHelper(ctx.h, 'readerArticle', '2.7.0', 'article')
+    requireTaskContext(ctx, 'article')
+    const a = await readArticle(() => ctx.h.readerArticle({
+      html: !ctx.flags.meta,
+      complete: !!ctx.flags.complete,
+    }))
+    ctx.print(ctx.flags.json ? renderJson(a) : renderArticle(a))
+  },
+})
+
+cmd({
+  name: 'article-save', group: 'Observe', sig: 'article-save [path]',
+  desc: 'Save the distilled article as one standalone HTML file (archive keeps the whole page)',
+  flags: {
+    complete: { type: 'bool', desc: 'wait for the whole of a long PDF, not its first pages' },
+    'link-images': { type: 'bool', desc: 'leave images as origin URLs instead of inlining them' },
+  },
+  context: 'page',
+  async run(ctx) {
+    requireHelper(ctx.h, 'saveArticle', '2.7.0', 'article-save')
+    requireTaskContext(ctx, 'article-save')
+    ctx.print(renderJson(await readArticle(() => ctx.h.saveArticle(ctx.args[0], {
+      complete: !!ctx.flags.complete,
+      inlineImages: !ctx.flags['link-images'],
+    }))))
   },
 })
 
@@ -621,9 +758,9 @@ cmd({
     const target = requireArg(ctx.args, 0, 'target')
     const text = ctx.args.slice(1).join(' ')
     if (!ctx.args[1]) throw new UsageError('missing text')
-    await ctx.h.fillInput(normalizeTarget(target), text, { instant: !!ctx.flags.instant })
+    const r = await ctx.h.fillInput(normalizeTarget(target), text, { instant: !!ctx.flags.instant })
     if (ctx.flags.submit) await ctx.h.pressKey('Enter')
-    await finishAction(ctx, `filled ${target}${ctx.flags.submit ? ' + Enter' : ''}`)
+    await finishAction(ctx, `filled ${target}${ctx.flags.submit ? ' + Enter' : ''}${unverifiedNote(r)}`, r)
   },
 })
 
@@ -840,41 +977,63 @@ cmd({
     const target = requireArg(ctx.args, 0, 'target')
     const value = ctx.args.slice(1).join(' ')
     if (!ctx.args[1]) throw new UsageError('missing option value')
-    await ctx.h.fillInput(normalizeTarget(target), value)
-    await finishAction(ctx, `selected ${JSON.stringify(value)} in ${target}`)
+    const r = await ctx.h.fillInput(normalizeTarget(target), value)
+    await finishAction(ctx, `selected ${JSON.stringify(value)} in ${target}${unverifiedNote(r)}`, r)
   },
 })
 
+// The straight-line gesture, composed from raw mouse phases: what --steps asks
+// for, and what a build without the engine's drag() gets.
+async function rawDrag(ctx, startT, endT, button) {
+  const locate = async (raw) => {
+    const t = parseTarget(raw)
+    if (t.coords) return { x: t.coords[0], y: t.coords[1] }
+    const hit = await ctx.h.waitForElement(t.target, { timeout: 10 })
+    if (!hit?.found) throw new Error(`drag: ${raw} not found or not visible`)
+    return { x: hit.x, y: hit.y }
+  }
+  const a = await locate(startT)
+  const b = await locate(endT)
+  const steps = Math.max(2, ctx.flags.steps ?? 12)
+  const buttons = { left: 1, right: 2, middle: 4 }[button]
+  await ctx.h.mouseEvent('move', a)
+  await ctx.h.wait(0.1)
+  await ctx.h.mouseEvent('down', { ...a, button, buttons })
+  let last = a
+  try {
+    for (let i = 1; i <= steps; i++) {
+      last = {
+        x: Math.round(a.x + ((b.x - a.x) * i) / steps),
+        y: Math.round(a.y + ((b.y - a.y) * i) / steps),
+      }
+      await ctx.h.mouseEvent('move', { ...last, buttons })
+      await ctx.h.wait(0.03)
+    }
+  } finally {
+    // Always released: a failed move must not leave the button stuck down.
+    await ctx.h.mouseEvent('up', { ...last, button, buttons: 0 })
+  }
+}
+
 cmd({
   name: 'drag', group: 'Act', sig: 'drag <startTarget> <endTarget>',
-  desc: 'Mouse-drag from one target to another (press, glide, release)',
-  flags: { steps: { type: 'num', desc: 'interpolated move steps (default 12)' } },
+  desc: 'Mouse-drag from one target to another (press, glide, release); both must be on screen',
+  flags: {
+    right: { type: 'bool', desc: 'right button' },
+    middle: { type: 'bool', desc: 'middle button' },
+    steps: { type: 'num', desc: 'a straight line of N raw moves instead of the humanized glide' },
+  },
   context: 'page',
   async run(ctx) {
     const startT = requireArg(ctx.args, 0, 'start target')
     const endT = requireArg(ctx.args, 1, 'end target')
-    const locate = async (raw) => {
-      const t = parseTarget(raw)
-      if (t.coords) return { x: t.coords[0], y: t.coords[1] }
-      const hit = await ctx.h.waitForElement(t.target, { timeout: 10 })
-      if (!hit?.found) throw new Error(`drag: ${raw} not found or not visible`)
-      return { x: hit.x, y: hit.y }
+    const button = ctx.flags.right ? 'right' : ctx.flags.middle ? 'middle' : 'left'
+    if (ctx.flags.steps === undefined && typeof ctx.h.drag === 'function') {
+      const end = (raw) => { const t = parseTarget(raw); return t.coords ?? t.target }
+      await ctx.h.drag(end(startT), end(endT), { button })
+    } else {
+      await rawDrag(ctx, startT, endT, button)
     }
-    const a = await locate(startT)
-    const b = await locate(endT)
-    const steps = Math.max(2, ctx.flags.steps ?? 12)
-    await ctx.h.mouseEvent('move', a)
-    await ctx.h.wait(0.1)
-    await ctx.h.mouseEvent('down', { ...a, buttons: 1 })
-    for (let i = 1; i <= steps; i++) {
-      await ctx.h.mouseEvent('move', {
-        x: Math.round(a.x + ((b.x - a.x) * i) / steps),
-        y: Math.round(a.y + ((b.y - a.y) * i) / steps),
-        buttons: 1,
-      })
-      await ctx.h.wait(0.03)
-    }
-    await ctx.h.mouseEvent('up', { ...b, buttons: 0 })
     await finishAction(ctx, `dragged ${startT} -> ${endT}`)
   },
 })
@@ -1381,7 +1540,7 @@ cmd({
     }
     if (!src.trim()) throw new UsageError('empty script (pipe a heredoc or use --file)')
     const script = (ctx.flags['no-bind'] ? ''
-      : `await enterContext({ kind: 'agent', name: ${JSON.stringify(ctx.session)} })\n`) + src
+      : `await enterContext(${JSON.stringify(taskSpec(ctx.flags, ctx.session))})\n`) + src
     const runner = join(resolveLibDir(), '..', 'runner.mjs')
     const code = await new Promise((res) => {
       const child = spawn(process.execPath, [runner],
@@ -1396,11 +1555,12 @@ cmd({
 
 cmd({
   name: 'close-all', group: 'Session', sig: 'close-all',
-  desc: 'Complete and close every agent Space this driver can see',
+  desc: 'Complete and close every agent Space and shadow window this driver can see',
   context: 'app',
   async run(ctx) {
     const tasks = await ctx.h.listAgentSpaces()
-    if (!tasks.length) { ctx.print('(no active agent Spaces)'); return }
+    const shadows = await shadowWindows(ctx.h)
+    if (!tasks.length && !shadows.length) { ctx.print('(no active agent Spaces)'); return }
     let closed = 0
     for (const t of tasks) {
       try {
@@ -1411,21 +1571,46 @@ cmd({
         ctx.print(`! could not close ${t.taskId}: ${err?.message || err}`)
       }
     }
-    ctx.print(`ok: closed ${closed}/${tasks.length} Space(s)`)
+    // By name, not by binding: an abandoned window may be what is stuck, and
+    // the user has no way to find or close it themselves.
+    let closedShadows = 0
+    for (const s of shadows) {
+      try {
+        await ctx.h.closeShadowWindow(s.taskId)
+        closedShadows++
+      } catch (err) {
+        ctx.print(`! could not close shadow window ${s.taskId}: ${err?.message || err}`)
+      }
+    }
+    ctx.print(`ok: closed ${closed}/${tasks.length} Space(s)` +
+      (shadows.length ? `, ${closedShadows}/${shadows.length} shadow window(s)` : ''))
   },
 })
 
 // Where each agent keeps its skills, in the order Phi's own Settings ▸
 // Developer installer lists them. Pi also wants a companion extension, which
-// is what lets an Agent Transcript command wake a live Pi session.
+// is what lets an Agent Transcript command wake a live Pi session. The agents
+// after Pi only drive Phi: the transcript mirrors just the first six.
 const SKILL_AGENTS = [
   { id: 'claude', label: 'Claude Code', skills: ['.claude', 'skills'] },
   { id: 'codex', label: 'Codex', skills: ['.codex', 'skills'] },
   { id: 'cursor', label: 'Cursor', skills: ['.cursor', 'skills'] },
-  { id: 'openclaw', label: 'OpenClaw', skills: ['.openclaw', 'skills'] },
   { id: 'hermes', label: 'Hermes', skills: ['.hermes', 'skills'] },
+  { id: 'openclaw', label: 'OpenClaw', skills: ['.openclaw', 'skills'] },
   { id: 'pi', label: 'Pi', skills: ['.pi', 'agent', 'skills'],
     extensions: ['.pi', 'agent', 'extensions'] },
+  { id: 'grok', label: 'Grok Build', skills: ['.grok', 'skills'] },
+  // The desktop app has no folder of its own and reads Grok Build's, so the
+  // two ids are one link.
+  { id: 'grokbot', label: 'Grok Bot', skills: ['.grok', 'skills'] },
+  // Antigravity's shared folder, which Gemini CLI reads too.
+  { id: 'antigravity', label: 'Antigravity', skills: ['.gemini', 'skills'] },
+  { id: 'copilot', label: 'GitHub Copilot', skills: ['.copilot', 'skills'] },
+  { id: 'opencode', label: 'OpenCode', skills: ['.config', 'opencode', 'skills'] },
+  { id: 'qwen', label: 'Qwen Code', skills: ['.qwen', 'skills'] },
+  { id: 'codebuddy', label: 'CodeBuddy', skills: ['.codebuddy', 'skills'] },
+  // The cross-agent folder Deep Code, Kimi Code, Cline, and DeepSeek Harness read.
+  { id: 'agents', label: 'Common agents', skills: ['.agents', 'skills'] },
 ]
 
 const realOf = (p) => { try { return realpathSync(p) } catch { return null } }
@@ -1475,9 +1660,12 @@ function installPhiBrowserSkill(ctx) {
   // Naming an agent is the intent, so it is installed whether or not it is
   // set up yet. With none named, install only where the agent already lives —
   // otherwise this litters ~ with directories for tools you don't use.
+  const seen = new Set()
   const targets = SKILL_AGENTS.filter((a) => named.length
     ? named.includes(a.id)
     : existsSync(join(homedir(), ...a.skills.slice(0, -1))))
+    // Agents sharing a folder share one link, so report it once.
+    .filter((a) => !seen.has(a.skills.join('/')) && seen.add(a.skills.join('/')))
   if (!targets.length) {
     ctx.print('(no agent directories found — name one explicitly, e.g. ' +
       `\`${PROG} install skill claude\`)`)
@@ -1490,7 +1678,7 @@ function installPhiBrowserSkill(ctx) {
     const dest = join(homedir(), ...agent.skills, 'phi-browser')
     const state = linkSkill(skillRoot, dest, opts)
     if (state === 'blocked') blocked++
-    lines.push(`  ${agent.label.padEnd(12)} ${state.padEnd(13)} ${tildify(dest)}`)
+    lines.push(`  ${agent.label.padEnd(14)} ${state.padEnd(13)} ${tildify(dest)}`)
     if (!agent.extensions) continue
     // Pi's companion extension: without it an Agent Transcript command cannot
     // wake a live Pi session, it only queues until the next round.
@@ -1499,7 +1687,7 @@ function installPhiBrowserSkill(ctx) {
     const extDest = join(homedir(), ...agent.extensions, 'phi-browser')
     const extState = linkSkill(extSrc, extDest, opts)
     if (extState === 'blocked') blocked++
-    lines.push(`  ${''.padEnd(12)} ${extState.padEnd(13)} ${tildify(extDest)}`)
+    lines.push(`  ${''.padEnd(14)} ${extState.padEnd(13)} ${tildify(extDest)}`)
   }
   ctx.print(`${ctx.flags['dry-run'] ? 'dry run' : 'ok'}: phi-browser skill -> ${skillRoot}\n` +
     lines.join('\n'))
@@ -1566,6 +1754,22 @@ cmd({
 
 const SPACE_FLAG = { space: { type: 'str', desc: 'target a user Space (name or id) instead of the session window' } }
 
+const THEME_FLAGS = {
+  theme: { type: 'str', desc: 'built-in theme: pure|mist|mint|aqua|iris|petal|coral|amber' },
+  color: { type: 'str', desc: 'colorHex #RRGGBB — snaps to the nearest theme by hue' },
+  icon: { type: 'str', desc: 'iconName: "phi:phi-icon-<name>", a catalog name ("mail"), "emoji:<hex>", or the emoji' },
+}
+
+// Before 2.12.0 a Space has no theme and the engine drops the option, so a
+// reply with none means the request did nothing. Otherwise report what landed
+// rather than what was asked: --color snaps, so the two can differ.
+function themeOutcome(ctx, r) {
+  if (r.themeId) return ` theme=${r.themeId}`
+  return ctx.flags.theme ? ' (--theme ignored: needs Phi Browser 2.12.0+)' : ''
+}
+
+const windowOpt = (flags) => (flags['window-id'] !== undefined ? { window: flags['window-id'] } : {})
+
 // --- Spaces ---
 
 cmd({
@@ -1583,8 +1787,7 @@ cmd({
   desc: 'Create a user Space',
   flags: {
     profile: { type: 'str', desc: 'profileId or display name (default: active Space\'s profile)' },
-    color: { type: 'str', desc: 'colorHex #RRGGBB' },
-    icon: { type: 'str', desc: 'iconName ("phi:phi-icon-N" or "emoji:<hex>")' },
+    ...THEME_FLAGS,
     activate: { type: 'bool', desc: 'also surface it in the focused window' },
   },
   context: 'app',
@@ -1592,34 +1795,36 @@ cmd({
     const name = requireArg(ctx.args, 0, 'space name')
     const r = await ctx.h.createSpace(name, {
       ...(ctx.flags.profile ? { profile: ctx.flags.profile } : {}),
+      ...(ctx.flags.theme ? { themeId: ctx.flags.theme } : {}),
       ...(ctx.flags.color ? { colorHex: ctx.flags.color } : {}),
       ...(ctx.flags.icon ? { iconName: ctx.flags.icon } : {}),
       ...(ctx.flags.activate ? { activate: true } : {}),
     })
-    ctx.print(ctx.flags.json ? renderJson(r) : `ok: created Space "${name}" (${r.spaceId})`)
+    ctx.print(ctx.flags.json ? renderJson(r) : `ok: created Space "${name}" (${r.spaceId})${themeOutcome(ctx, r)}`)
   },
 })
 
 cmd({
   name: 'space-update', group: 'Manage', sig: 'space-update <space>',
-  desc: 'Rename / recolor / re-icon a Space',
+  desc: 'Rename / retheme / re-icon a Space',
   flags: {
     name: { type: 'str', desc: 'new name' },
-    color: { type: 'str', desc: 'colorHex #RRGGBB' },
-    icon: { type: 'str', desc: 'iconName' },
+    ...THEME_FLAGS,
   },
   context: 'app',
   async run(ctx) {
     const space = requireArg(ctx.args, 0, 'space')
-    if (!ctx.flags.name && !ctx.flags.color && !ctx.flags.icon) {
-      throw new UsageError('give at least one of --name / --color / --icon')
+    if (!ctx.flags.name && !ctx.flags.theme && !ctx.flags.color && !ctx.flags.icon) {
+      throw new UsageError('give at least one of --name / --theme / --color / --icon')
     }
     const r = await ctx.h.updateSpace(space, {
       ...(ctx.flags.name ? { name: ctx.flags.name } : {}),
+      ...(ctx.flags.theme ? { themeId: ctx.flags.theme } : {}),
       ...(ctx.flags.color ? { colorHex: ctx.flags.color } : {}),
       ...(ctx.flags.icon ? { iconName: ctx.flags.icon } : {}),
     })
-    ctx.print(ctx.flags.json ? renderJson(r) : `ok: updated ${r.spaceId}${r.settled ? '' : ' (unconfirmed — re-list)'}`)
+    ctx.print(ctx.flags.json ? renderJson(r)
+      : `ok: updated ${r.spaceId}${themeOutcome(ctx, r)}${r.settled ? '' : ' (unconfirmed — re-list)'}`)
   },
 })
 
@@ -1650,23 +1855,26 @@ cmd({
 
 cmd({
   name: 'space-open', group: 'Manage', sig: 'space-open <space> <url>',
-  desc: "Open a URL as a new tab in a user Space's window",
-  flags: { background: { type: 'bool', desc: "don't select the new tab" } },
+  desc: "Open a URL as a new tab in a user Space's window (opens a window if it has none)",
+  flags: { background: { type: 'bool', desc: "don't select the new tab; a new window opens behind the user's" } },
   context: 'app',
   async run(ctx) {
     const space = requireArg(ctx.args, 0, 'space')
     const url = requireArg(ctx.args, 1, 'url')
-    const r = await ctx.h.openSpaceTab(space, url, { activate: !ctx.flags.background })
-    ctx.print(ctx.flags.json ? renderJson(r) : `ok: opened tab ${r.tabId} in "${space}"`)
+    const r = await ctx.h.openSpaceTab(space, url, {
+      activate: !ctx.flags.background, ...windowOpt(ctx.flags),
+    })
+    ctx.print(ctx.flags.json ? renderJson(r)
+      : `ok: opened tab ${r.tabId} in "${space}"${r.windowOpened ? ' (opened a new window)' : ''}`)
   },
 })
 
 cmd({
   name: 'space-tabs', group: 'Manage', sig: 'space-tabs <space>',
-  desc: "List a user Space's tabs (tabId works as a tab reference)",
+  desc: "List a user Space's tabs, pinned and bookmark tabs included (tabId works as a tab reference)",
   context: 'app',
   async run(ctx) {
-    const tabs = await ctx.h.listSpaceTabs(requireArg(ctx.args, 0, 'space'))
+    const tabs = await ctx.h.listSpaceTabs(requireArg(ctx.args, 0, 'space'), windowOpt(ctx.flags))
     ctx.print(ctx.flags.json ? renderJson(tabs) : renderSpaceTabs(tabs))
   },
 })
@@ -2136,6 +2344,7 @@ cmd({
     const spec = JSON.stringify({
       kind: 'user', space,
       create: !ctx.flags['no-create'], activate: !!ctx.flags.activate,
+      ...windowOpt(ctx.flags),
     })
     const script = `await enterContext(${spec})\n${body}`
     const runner = join(resolveLibDir(), '..', 'runner.mjs')
@@ -2255,6 +2464,10 @@ function helpText(topic) {
     'fill, snapshot, …) to drive a USER Space\'s real, visible window instead of',
     'the agent Space — an unknown name is created.',
     '',
+    'Add --shadow to run in an invisible background window instead: same page',
+    'commands, but no pip, watching or handoff, so only when asked for background',
+    'work. Repeat the flag on every command, and `close` when done.',
+    '',
   ]
   for (const [g, ls] of groups) lines.push(`${g}:`, ...ls, '')
   lines.push('Global flags:', ...flagLines(GLOBAL_FLAGS), '',
@@ -2273,39 +2486,59 @@ export async function disposeHelpers() {
 }
 
 // The single place that turns a command's declared `context` + the context
-// flags (-s/--session, -U/--user-space, --persistent, per-command --space)
-// into a bound execution context via the skill's enterContext(). Returns the
-// context descriptor, or null when the command is app-level (no binding).
+// flags (-s/--session, -U/--user-space, --window-id, --shadow, --persistent,
+// per-command --space) into a bound execution context via the skill's
+// enterContext(). Returns the context descriptor, or null when the command is
+// app-level (no binding).
 //
 //   'app'   — no binding; management operates the browser app-wide.
-//   'agent' — the session's agent Space. create:false binds only if it already
-//             exists (close/status/messages must not mint a Space).
-//   'page'  — a bound window: the user Space when -U is given; app-level (no
-//             binding, helper uses --space) when the command accepts --space
-//             and it is set; the session's agent Space otherwise.
+//   'agent' — the session's agent Space, or its shadow window with --shadow.
+//             create:false binds only if it already exists
+//             (close/status/messages must not mint a Space).
+//   'page'  — a bound window: the user Space when -U or --window-id is given;
+//             app-level (no binding, helper uses --space) when the command
+//             accepts --space and it is set; otherwise the session's agent
+//             Space, or its shadow window with --shadow.
 async function resolveContext(h, cmdDef, flags, session) {
-  const agentSpec = () => ({
-    kind: 'agent', name: session,
-    ...(flags.profile ? { profile: flags.profile } : {}),
-    ...(flags.persistent ? { persistent: true } : {}),
-  })
+  if (flags.shadow && ['agent', 'page'].includes(cmdDef.context)) {
+    requireHelper(h, 'listShadowWindows', '2.7.0', '--shadow')
+  }
 
   switch (cmdDef.context) {
     case 'app':
       return null
     case 'agent':
       if (cmdDef.create === false) {
+        if (flags.shadow) {
+          const row = (await shadowWindows(h)).find((s) => s.taskId === session)
+          if (!row) return null  // don't create
+          // Bind it as what it is: the other kind fails shadow_incognito_mismatch,
+          // and closing a window must not hinge on recalling how it was opened.
+          return h.enterContext({ kind: 'shadow', name: session, incognito: Boolean(row.incognito) })
+        }
         const tasks = await h.listAgentSpaces()
         if (!tasks.some((t) => t.taskId === session)) return null  // don't create
       }
-      return h.enterContext(agentSpec())
+      return h.enterContext(taskSpec(flags, session))
     case 'page':
-      if (flags['user-space']) {
-        return h.enterContext({ kind: 'user', space: flags['user-space'],
-          ...(flags.profile ? { profile: flags.profile } : {}) })
+      if (flags['user-space'] !== undefined || flags['window-id'] !== undefined) {
+        const want = flags['window-id']
+        const bound = await h.enterContext({
+          kind: 'user',
+          ...(flags['user-space'] !== undefined ? { space: flags['user-space'] } : {}),
+          ...(flags.profile ? { profile: flags.profile } : {}),
+          ...windowOpt(flags),
+        })
+        // Builds before 2.9.0 ignore `window` and bind the key window. Nothing
+        // has acted yet, so refuse here rather than drive the wrong one.
+        if (want !== undefined && bound.windowId !== want) {
+          throw new Error(`--window-id ${want} bound window ${bound.windowId} instead — ` +
+            'pinning a window needs Phi Browser 2.9.0+')
+        }
+        return bound
       }
       if (flags.space && cmdDef.flags?.space) return null  // --space → app-level
-      return h.enterContext(agentSpec())
+      return h.enterContext(taskSpec(flags, session))
     default:
       throw new Error(`command "${cmdDef.name}" has invalid context ${JSON.stringify(cmdDef.context)}`)
   }
@@ -2699,6 +2932,20 @@ async function runOnce(argv) {
     return 2
   }
 
+  // Checked before config merges in: a config's `persistent: true` describes
+  // agent Spaces and should not make --shadow a usage error.
+  const contextConflict = flags.incognito && !flags.shadow
+    ? '--incognito needs --shadow — it describes a shadow window'
+    : flags.shadow && (flags['user-space'] !== undefined || flags['window-id'] !== undefined)
+      ? '--shadow cannot combine with -U/--window-id — one is invisible, the other is the user\'s real window'
+      : flags.shadow && flags.persistent
+        ? '--shadow cannot combine with --persistent — only an agent Space can be kept'
+        : null
+  if (contextConflict) {
+    console.error(`${PROG}: ${contextConflict}`)
+    return 2
+  }
+
   const cfg = loadConfig()
   if (cfg.lib && !process.env.PHIBROWSER_CLI_LIB) process.env.PHIBROWSER_CLI_LIB = cfg.lib
   for (const k of ['profile', 'persistent', 'quiet', 'json', 'max', 'canary']) {
@@ -2772,8 +3019,9 @@ async function runOnce(argv) {
   try {
     ctx.context = await resolveContext(h, cmdDef, flags, session)
     // Back-compat: commands written before ctx.context still read ctx.task
-    // (agent-Space handle: pendingUserMessages, tabs, existence checks).
-    if (ctx.context?.kind === 'agent') ctx.task = ctx.context
+    // (the task handle: pendingUserMessages, tabs, existence checks). A shadow
+    // window is a task too, with the same taskId, keep-alive and complete().
+    if (ctx.context?.kind === 'agent' || ctx.context?.kind === 'shadow') ctx.task = ctx.context
     await cmdDef.run(ctx)
     return 0
   } catch (err) {
@@ -2797,8 +3045,24 @@ async function runOnce(argv) {
     if (/user_space_operations_disabled/i.test(msg)) {
       console.error('Browser management is off. Enable Settings ▸ Developer ▸ ' +
                     '"Allow agents to operate your Spaces" to manage the user\'s ' +
-                    'Spaces/bookmarks/etc. Agent-Space commands are unaffected.')
+                    'Spaces/bookmarks/etc. or to use shadow windows. Agent-Space ' +
+                    'commands are unaffected.')
       return 4
+    }
+    if (/shadow_incognito_mismatch/.test(msg)) {
+      console.error(`Session "${session}" was opened with the other --incognito setting, which is ` +
+                    'fixed at creation — repeat it as it was, or pick a new -s name.')
+      return 1
+    }
+    // The engine's refusal names its own helpers; say it in this CLI's terms.
+    // A user Space's consent choice is the user's, so that case gets no hint.
+    if (/not human-operable/i.test(msg)) {
+      if (/cookie-consent/i.test(msg) && !flags['user-space'] && flags['window-id'] === undefined) {
+        console.error(`Dismiss it with \`${PROG} accept-cookies\`, or click the banner's own control.`)
+      } else if (/remained after/i.test(msg)) {
+        console.error(`Hand it over: \`${PROG} handoff "Complete the verification, then hand back"\`.`)
+      }
+      return 1
     }
     // The vault refused to serve, and repeating the same call cannot change
     // that — only the user can. Kept apart from a plain failure (1) so an
@@ -2813,7 +3077,7 @@ async function runOnce(argv) {
           'path that needs no secret. Note that grants are per exposure kind, ' +
           `so a denied \`${PROG} cred-get\` can follow an approved \`${PROG} cred-fill\`.`
         : `Password manager not ready — run \`${PROG} cred-status\`, then ask ` +
-          'the user to unlock or sign in (Phi ▸ Settings ▸ General).')
+          'the user to unlock or sign in (Phi ▸ Settings ▸ Developer).')
       return 6
     }
     return 1
