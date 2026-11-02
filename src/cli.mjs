@@ -197,6 +197,16 @@ async function readArticle(fn) {
     if (/no_article_detected|below_coverage_floor/.test(msg)) {
       throw new Error(`${msg} — this page is not an article; read it with \`${PROG} snapshot --text\``)
     }
+    // Reader View declines PDFs on purpose, and the PDF viewer shows a snapshot
+    // no text either, so pointing at the usual fallback would be a dead end.
+    if (/pdf_document/.test(msg)) {
+      throw new Error(`${msg} — Phi's Reader View does not read PDFs, and \`${PROG} snapshot --text\` ` +
+        'sees no text in one; fetch the file and read it outside the browser')
+    }
+    // The reader extension's host permissions stop at data: URLs, for one.
+    if (/no_target/.test(msg)) {
+      throw new Error(`${msg} — Phi's reader cannot reach this page; read it with \`${PROG} snapshot --text\``)
+    }
     // Extraction runs in Phi's reader extension, and an unloaded one answers
     // with silence (a dev build without its extensions, say) — not the page's fault.
     if (/transport_unavailable|agentSpace\.reader\w+: timed out/.test(msg)) {
@@ -677,7 +687,7 @@ cmd({
   desc: "The page distilled to its article (Phi's Reader View); refuses non-articles",
   flags: {
     meta: { type: 'bool', desc: 'only the verdict (title, rung, coverage) — no article markup' },
-    complete: { type: 'bool', desc: 'wait for the whole of a long PDF, not its first pages' },
+    complete: { type: 'bool', desc: 'wait for the whole of a long document, not its first pages' },
   },
   context: 'page',
   async run(ctx) {
@@ -695,7 +705,7 @@ cmd({
   name: 'article-save', group: 'Observe', sig: 'article-save [path]',
   desc: 'Save the distilled article as one standalone HTML file (archive keeps the whole page)',
   flags: {
-    complete: { type: 'bool', desc: 'wait for the whole of a long PDF, not its first pages' },
+    complete: { type: 'bool', desc: 'wait for the whole of a long document, not its first pages' },
     'link-images': { type: 'bool', desc: 'leave images as origin URLs instead of inlining them' },
   },
   context: 'page',

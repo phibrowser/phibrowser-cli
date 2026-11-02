@@ -17,6 +17,7 @@
 // do not fail the suite.
 
 import { spawn } from 'node:child_process'
+import { createServer } from 'node:http'
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -216,20 +217,33 @@ async function main() {
   // Extraction depends on the reader's heuristics, so these are smoke checks;
   // the wiring they prove is the flags, the markers and the refusal's hint.
   console.log('\n# Reader')
-  await SMOKE('article refuses a non-article, naming the fallback', async () => {
+  await SMOKE('article on a page the reader cannot reach names the fallback', async () => {
     const r = await run(['-s', S, 'article', '--meta'])
-    assert(r.code === 1, `expected exit 1 on a non-article, got ${r.code}`)
+    assert(r.code === 1, `expected exit 1 on a data: page, got ${r.code}`)
     assertHas(clean(r), 'snapshot --text', 'fallback hint')
   })
   const R = 'clitest-reader'
-  const ARTICLE = 'data:text/html,' + encodeURIComponent(
+  const ARTICLE_HTML = (
     '<!doctype html><meta charset=utf-8><title>phib-article</title><article><h1>phib-article</h1>' +
     Array.from({ length: 12 }, (_, i) => `<p>Paragraph ${i} of a plainly written article, long ` +
       'enough for the reader to accept it as the main content of this page and not as ' +
       'a stray notice sitting beside something else that matters more than it does.</p>').join('') +
     '</article>')
+  // Served, not data: URLs: the reader extension's host permissions stop short of those.
+  const pages = createServer((req, res) => {
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
+    res.end(req.url === '/article' ? ARTICLE_HTML : FIXTURE_HTML)
+  })
+  await new Promise((resolve) => pages.listen(0, '127.0.0.1', resolve))
+  const PAGES = `http://127.0.0.1:${pages.address().port}`
+  await SMOKE('article refuses a non-article, naming the fallback', async () => {
+    assertOk(await run(['-s', R, 'open', `${PAGES}/page`, '--no-cookies']), 'open page')
+    const r = await run(['-s', R, 'article', '--meta'])
+    assert(r.code === 1, `expected exit 1 on a non-article, got ${r.code}`)
+    assertHas(clean(r), 'snapshot --text', 'fallback hint')
+  })
   await SMOKE('article prints its verdict inside the untrusted markers', async () => {
-    assertOk(await run(['-s', R, 'open', ARTICLE, '--no-cookies']), 'open article')
+    assertOk(await run(['-s', R, 'goto', `${PAGES}/article`, '--no-cookies']), 'open article')
     const r = assertOk(await run(['-s', R, 'article']), 'article')
     assertHas(clean(r), 'BEGIN UNTRUSTED PAGE CONTENT', 'markers')
     assertHas(clean(r), 'phib-article', 'title')
@@ -240,6 +254,8 @@ async function main() {
     assert(existsSync(f) && statSync(f).size > 0, 'output file missing/empty')
   })
   await run(['-s', R, 'close'])
+  pages.closeAllConnections()
+  pages.close()
 
   // ===== Actions (assert via DOM readback) =================================
   console.log('\n# Act')
@@ -292,7 +308,9 @@ async function main() {
   await T('drag --steps (raw straight line)', async () => {
     const rect = JSON.parse(await ev("(function(){var r=document.getElementById('rng').getBoundingClientRect();return JSON.stringify({x:Math.round(r.left),y:Math.round(r.top+r.height/2),w:Math.round(r.width)})})()"))
     const before = Number(await ev("document.getElementById('rng').value"))
-    const from = `${rect.x + Math.round((rect.w * before) / 100)},${rect.y}`
+    // The thumb is 16px wide, so its center stops 8px short of each end; at 100
+    // the track's far edge is already outside the control.
+    const from = `${rect.x + 8 + Math.round(((rect.w - 16) * before) / 100)},${rect.y}`
     const to = `${rect.x + 4},${rect.y}`
     assertOk(await run(['-s', S, 'drag', from, to, '--steps', '8']), 'drag --steps')
     const val = Number(await ev("document.getElementById('rng').value"))
@@ -440,9 +458,10 @@ async function main() {
   })
   await T('cred-fill is origin-bound (refuses before touching the vault)', async () => {
     // The page is on example.com; the credential is for another site. The
-    // pre-check fires client-side, so no approval prompt is spent.
+    // pre-check fires client-side, so no approval prompt is spent. The target
+    // must exist, because the engine resolves it before comparing origins.
     assertOk(await run(['-s', S, 'goto', 'https://example.com', '--quiet']), 'goto for origin check')
-    const r = await run(['-s', S, 'cred-fill', 'css:#nope', 'github.com'])
+    const r = await run(['-s', S, 'cred-fill', 'css:a', 'github.com'])
     assert(r.code !== 0, 'filled across origins')
     assertHas(clean(r), 'origin_mismatch', 'origin guard')
   })

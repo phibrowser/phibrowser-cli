@@ -232,10 +232,9 @@ per-command flags.
 
 ### Reading an article
 
-When what you want is an article — a blog post, a news story, a docs page, a
-PDF — reach for `article` before `snapshot --text`. It runs Phi's Reader View
-pipeline, so the nav, comments and related-post rails are already gone, and it
-is the only way to read a PDF.
+When what you want is an article — a blog post, a news story, a docs page —
+reach for `article` before `snapshot --text`. It runs Phi's Reader View
+pipeline, so the nav, comments and related-post rails are already gone.
 
 ```bash
 phi article                # verdict header, then the article's HTML
@@ -244,9 +243,15 @@ phi article-save post.html # one standalone file, images inlined
 ```
 
 The header names how it was extracted (`rule`, `readability`, `structural`, or
-`accessibility` for a PDF) and how much of the page survived. On a page that is
-not an article it fails with `no_article_detected` or `below_coverage_floor`;
-that is an honest answer, so use `snapshot --text` rather than retrying.
+`accessibility` for a page whose markup defeats the others) and how much of the
+page survived. A page that is not an article usually fails with
+`no_article_detected` or `below_coverage_floor`; that is an honest answer, so use
+`snapshot --text` rather than retrying. A `data:` page fails with `no_target`,
+because the reader cannot reach one.
+
+Reader View does not read PDFs (`pdf_document`), and `snapshot --text` sees no
+text in one either, so fetch the file and read it outside the browser.
+
 `archive` remains the way to keep the whole original page. Both article commands
 need an agent Space or shadow window, not `-U`.
 
