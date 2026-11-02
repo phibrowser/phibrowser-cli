@@ -28,8 +28,9 @@ const onlyAt = args.indexOf('--only')
 const only = onlyAt === -1 ? null : args[onlyAt + 1]
 const MIRROR = 'phibrowser'
 
+// Inherited, so npm can ask for a one-time password or a browser approval.
 const run = (cmd, cmdArgs) =>
-  execFileSync(cmd, cmdArgs, { cwd: pkgRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] })
+  execFileSync(cmd, cmdArgs, { cwd: pkgRoot, stdio: 'inherit' })
 
 /** Already on the registry at this exact version? Republishing is an error.
  *  An unpublished name 404s on stderr, which is the normal case here. */
