@@ -8,8 +8,8 @@
 class PhiCli < Formula
   desc "Command-line automation for the Phi Browser app"
   homepage "https://github.com/phibrowser/phibrowser-cli"
-  url "https://registry.npmjs.org/@phibrowser/cli/-/cli-0.3.0.tgz"
-  sha256 "28f3cc03bf3d2615c05522814098cb4891da7ccd41dc5cb1ff53157263456503"
+  url "https://registry.npmjs.org/@phibrowser/cli/-/cli-0.4.0.tgz"
+  sha256 "904711d5b0042d53d0d51437536b5b443e23b04d444de7297cd3246203bc69a6"
   license "Apache-2.0"
 
   # The CLI drives the Phi Browser macOS app over its app-owned Unix socket.
@@ -25,16 +25,15 @@ class PhiCli < Formula
 
   def caveats
     <<~EOS
-      The `phi` command drives a running Phi Browser — it is a client, not
-      a browser. It loads the automation engine that ships inside the app
-      bundle, so:
+      The `phi` command drives Phi Browser — it is a client, not a browser.
+      It loads the automation engine that ships inside the app bundle, so
+      install the app first:
 
-        1. Install Phi Browser:  brew install --cask phibrowser/tap/phi
-        2. Enable Settings > Developer > Remote debugging >
-           "Allow agents to control Phi (CDP)"
+        brew install --cask phibrowser/tap/phi
 
-      The first connection asks for consent in the app. For a non-standard
-      install location, point PHIBROWSER_APP at the bundle.
+      The first connection asks for your approval in the app, which also
+      turns agent control on. For a non-standard install location, point
+      PHIBROWSER_APP at the bundle.
     EOS
   end
 
