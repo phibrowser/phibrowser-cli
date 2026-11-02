@@ -29,9 +29,14 @@ the formula follows it.
 ```bash
 npm version <patch|minor|major>     # bumps package.json, commits, tags
 npm run formula -- --local          # restamp the formula from the local pack
-npm publish                         # prepublishOnly gate runs first
+node scripts/publish.mjs            # @phibrowser/cli, then the phibrowser mirror
 npm run formula                     # restamp from the registry (authoritative)
 ```
+
+`scripts/publish.mjs` publishes the same tarball under both registry names, and
+skips a name already on the registry at this version, so re-running it after a
+partial failure is safe. `--dry-run` reports what it would do. The
+`prepublishOnly` gate runs on the first publish and covers both.
 
 `npm pack` is byte-reproducible, so the `--local` hash normally equals the
 registry one and the last step is a no-op that proves it. If it *does* change
