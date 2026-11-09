@@ -366,13 +366,13 @@ phi-browser skill" ▸ Add skill to…** menu does, without leaving the terminal
 | `hermes` | `~/.hermes/skills` |
 | `openclaw` | `~/.openclaw/skills` |
 | `pi` | `~/.pi/agent/skills` |
-| `grok`, `grokbot` | `~/.grok/skills` (one link serves both) |
+| `grok` | `~/.grok/skills` |
 | `antigravity` | `~/.gemini/skills` (shared with Gemini CLI) |
 | `copilot` | `~/.copilot/skills` |
 | `opencode` | `~/.config/opencode/skills` |
 | `qwen` | `~/.qwen/skills` |
 | `codebuddy` | `~/.codebuddy/skills` |
-| `agents` | `~/.agents/skills` (read by Deep Code, Kimi Code, Cline, DeepSeek Harness) |
+| `agents`, `grokbot` | `~/.agents/skills` (one link serves both; also read by Deep Code, Kimi Code, Cline, DeepSeek Harness) |
 
 Name them explicitly, or name none and every agent already present on the
 machine gets the link — so this never litters `~` with directories for tools

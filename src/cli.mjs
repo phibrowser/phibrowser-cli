@@ -1610,9 +1610,10 @@ const SKILL_AGENTS = [
   { id: 'pi', label: 'Pi', skills: ['.pi', 'agent', 'skills'],
     extensions: ['.pi', 'agent', 'extensions'] },
   { id: 'grok', label: 'Grok Build', skills: ['.grok', 'skills'] },
-  // The desktop app has no folder of its own and reads Grok Build's, so the
-  // two ids are one link.
-  { id: 'grokbot', label: 'Grok Bot', skills: ['.grok', 'skills'] },
+  // The desktop app has no folder of its own and skips third-party folders
+  // like Grok Build's unless those are enabled, but always reads the common
+  // folder, so this id and 'agents' are one link.
+  { id: 'grokbot', label: 'Grok Bot', skills: ['.agents', 'skills'] },
   // Antigravity's shared folder, which Gemini CLI reads too.
   { id: 'antigravity', label: 'Antigravity', skills: ['.gemini', 'skills'] },
   { id: 'copilot', label: 'GitHub Copilot', skills: ['.copilot', 'skills'] },

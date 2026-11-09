@@ -558,8 +558,8 @@ async function main() {
   })
   await T('install skill reports a folder two agents share once', async () => {
     const home = join(TMP, 'fakehome5')
-    const r = assertOk(await run(['install', 'skill', 'grok', 'grokbot'], { env: { HOME: home } }), 'grok')
-    assert(clean(r).split('.grok/skills/phi-browser').length === 2, 'expected one row for the shared link')
+    const r = assertOk(await run(['install', 'skill', 'grokbot', 'agents'], { env: { HOME: home } }), 'grokbot')
+    assert(clean(r).split('.agents/skills/phi-browser').length === 2, 'expected one row for the shared link')
   })
   await T('context flags that contradict each other are usage errors', async () => {
     for (const args of [['--incognito', 'tabs'], ['--shadow', '-U', 'Work', 'tabs'],
