@@ -1598,17 +1598,15 @@ cmd({
 })
 
 // Where each agent keeps its skills, in the order Phi's own Settings ▸
-// Developer installer lists them. Pi also wants a companion extension, which
-// is what lets an Agent Transcript command wake a live Pi session. The agents
-// after Pi only drive Phi: the transcript mirrors just the first six.
+// Developer installer lists them. Pi and the agents after it only drive Phi:
+// the transcript mirrors just the first five.
 const SKILL_AGENTS = [
   { id: 'claude', label: 'Claude Code', skills: ['.claude', 'skills'] },
   { id: 'codex', label: 'Codex', skills: ['.codex', 'skills'] },
   { id: 'cursor', label: 'Cursor', skills: ['.cursor', 'skills'] },
   { id: 'hermes', label: 'Hermes', skills: ['.hermes', 'skills'] },
   { id: 'openclaw', label: 'OpenClaw', skills: ['.openclaw', 'skills'] },
-  { id: 'pi', label: 'Pi', skills: ['.pi', 'agent', 'skills'],
-    extensions: ['.pi', 'agent', 'extensions'] },
+  { id: 'pi', label: 'Pi', skills: ['.pi', 'agent', 'skills'] },
   { id: 'grok', label: 'Grok Build', skills: ['.grok', 'skills'] },
   // The desktop app has no folder of its own and skips third-party folders
   // like Grok Build's unless those are enabled, but always reads the common
@@ -1690,21 +1688,9 @@ function installPhiBrowserSkill(ctx) {
     const state = linkSkill(skillRoot, dest, opts)
     if (state === 'blocked') blocked++
     lines.push(`  ${agent.label.padEnd(14)} ${state.padEnd(13)} ${tildify(dest)}`)
-    if (!agent.extensions) continue
-    // Pi's companion extension: without it an Agent Transcript command cannot
-    // wake a live Pi session, it only queues until the next round.
-    const extSrc = join(skillRoot, 'extensions', 'pi')
-    if (!existsSync(extSrc)) continue
-    const extDest = join(homedir(), ...agent.extensions, 'phi-browser')
-    const extState = linkSkill(extSrc, extDest, opts)
-    if (extState === 'blocked') blocked++
-    lines.push(`  ${''.padEnd(14)} ${extState.padEnd(13)} ${tildify(extDest)}`)
   }
   ctx.print(`${ctx.flags['dry-run'] ? 'dry run' : 'ok'}: phi-browser skill -> ${skillRoot}\n` +
     lines.join('\n'))
-  if (targets.some((a) => a.id === 'pi') && !ctx.flags['dry-run']) {
-    ctx.print('\nPi: run `/reload` in an already-open session to pick up the extension.')
-  }
   if (blocked) {
     console.error(`${PROG} install: ${blocked} destination(s) hold a real directory, ` +
       'not a link — that is your files, so nothing was touched. Inspect them, ' +

@@ -376,11 +376,9 @@ phi-browser skill" ▸ Add skill to…** menu does, without leaving the terminal
 
 Name them explicitly, or name none and every agent already present on the
 machine gets the link — so this never litters `~` with directories for tools
-you don't use. Every agent can drive Phi, but only the first six get the session
-mirror: under the rest, Agent Transcript shows the browser steps and not the
-agent's own conversation. **Pi** also gets a companion extension at
-`~/.pi/agent/extensions/phi-browser`, which is what lets an Agent Transcript
-command wake a live Pi session; run `/reload` in an open Pi session afterwards.
+you don't use. Every agent can drive Phi, but only the first five get the
+session mirror: under the rest, Agent Transcript shows the browser steps and not
+the agent's own conversation.
 
 Re-running is idempotent (`current`), a link pointing elsewhere is repointed
 (`relinked`), and a **real directory** in the way is left untouched

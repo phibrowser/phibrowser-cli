@@ -511,9 +511,11 @@ async function main() {
     const link = join(home, '.claude', 'skills', 'phi-browser')
     assert(lstatSync(link).isSymbolicLink(), 'not a symlink')
     assert(existsSync(join(link, 'SKILL.md')), 'skill not readable through the link')
-    // Pi's companion extension is what wakes a live Pi session.
-    assert(lstatSync(join(home, '.pi', 'agent', 'extensions', 'phi-browser')).isSymbolicLink(),
-      'pi extension not linked')
+    // Pi gets the skill link like every other agent, and nothing else.
+    assert(lstatSync(join(home, '.pi', 'agent', 'skills', 'phi-browser')).isSymbolicLink(),
+      'pi skill not linked')
+    assert(!existsSync(join(home, '.pi', 'agent', 'extensions')),
+      'created a pi extensions dir')
     // Untouched agents must not be created.
     assert(!existsSync(join(home, '.codex')), 'created a dir for an absent agent')
   })
